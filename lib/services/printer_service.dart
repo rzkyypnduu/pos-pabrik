@@ -164,12 +164,14 @@ class PrinterService {
     required String totalText,
     required String paidText,
     required String changeText,
+    String changeLabel = 'KEMBALI',
     String address = '',
     String phone = '',
     String slogan = 'Terima kasih!',
     String footer = '',
     String logoPath = '',
     String customerName = '',
+    DateTime? timestamp,
     int paperWidth = 384,
   }) async {
     final bytes = await _buildReceiptBytes(
@@ -178,12 +180,14 @@ class PrinterService {
       totalText: totalText,
       paidText: paidText,
       changeText: changeText,
+      changeLabel: changeLabel,
       address: address,
       phone: phone,
       slogan: slogan,
       footer: footer,
       logoPath: logoPath,
       customerName: customerName,
+      timestamp: timestamp,
       paperWidth: paperWidth,
     );
     if (Platform.isWindows) {
@@ -323,12 +327,14 @@ class PrinterService {
     required String totalText,
     required String paidText,
     required String changeText,
+    String changeLabel = 'KEMBALI',
     String address = '',
     String phone = '',
     String slogan = 'Terima kasih!',
     String footer = '',
     String logoPath = '',
     String customerName = '',
+    DateTime? timestamp,
     int paperWidth = 384,
   }) async {
     final b = <int>[];
@@ -372,13 +378,18 @@ class PrinterService {
 
     // ── CUSTOMER NAME & DATE ──
     if (customerName.isNotEmpty) {
-      final now = DateTime.now();
+      final now = timestamp ?? DateTime.now();
       final dateStr = '${now.day}/${now.month}/${now.year}';
       final timeStr =
           '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
       b.addAll(_alignLeft());
-      b.addAll(_wrapLeft('Nama            : $customerName'));
-      b.addAll(_textLine('Tanggal cetak   : $dateStr $timeStr'));
+      b.addAll(_wrapLeft('Nama${' ' * 12}: $customerName'));
+      final label = timestamp != null ? 'Tanggal' : 'Tanggal cetak';
+      final onlyDate = timestamp != null && now.hour == 0 && now.minute == 0;
+      final line = onlyDate
+          ? '${label.padRight(16)}: $dateStr'
+          : '${label.padRight(16)}: $dateStr $timeStr';
+      b.addAll(_textLine(line));
       b.addAll(_alignCenter());
       b.addAll(_textLine('================================'));
     }
@@ -404,7 +415,7 @@ class PrinterService {
     b.addAll(_boldOff());
 
     b.addAll(_twoCol('BAYAR', paidText));
-    b.addAll(_twoCol('KEMBALI', changeText));
+    b.addAll(_twoCol(changeLabel, changeText));
     b.addAll(_textLine('================================'));
 
     // ── FOOTER ──

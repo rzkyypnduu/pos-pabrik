@@ -709,6 +709,10 @@ class _TransaksiFormScreenState extends State<TransaksiFormScreen> {
     bool isEditing,
   ) {
     final diff = txProv.txDiff(products);
+    final hasItems = totalKg > 0;
+    final paidNow =
+        int.tryParse(txProv.txPaid.replaceAll('.', '').replaceAll(',', '')) ??
+        0;
     return Container(
       color: Colors.white,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -784,7 +788,7 @@ class _TransaksiFormScreenState extends State<TransaksiFormScreen> {
                     ),
                   ),
                   Text(
-                    rupiah(roundedTotal),
+                    rupiah(hasItems ? roundedTotal : paidNow),
                     style: const TextStyle(
                       fontSize: 26,
                       fontFamily: 'monospace',
@@ -822,10 +826,12 @@ class _TransaksiFormScreenState extends State<TransaksiFormScreen> {
                 ),
                 const SizedBox(width: 8),
                 ElevatedButton(
-                  onPressed: () {
-                    txProv.fillLunas(products);
-                    _paidController.text = roundedTotal.toString();
-                  },
+                  onPressed: hasItems
+                      ? () {
+                          txProv.fillLunas(products);
+                          _paidController.text = roundedTotal.toString();
+                        }
+                      : null,
                   style: ElevatedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(
                       horizontal: 16,
@@ -837,7 +843,12 @@ class _TransaksiFormScreenState extends State<TransaksiFormScreen> {
               ],
             ),
             const SizedBox(height: 10),
-            _statusBox(diff, txProv.txPaidTouched),
+            _statusBox(
+              diff,
+              txProv.txPaidTouched,
+              hasItems: hasItems,
+              paidNow: paidNow,
+            ),
             const SizedBox(height: 8),
             TextField(
               controller: _noteController,
@@ -853,7 +864,8 @@ class _TransaksiFormScreenState extends State<TransaksiFormScreen> {
               width: double.infinity,
               height: 48,
               child: ElevatedButton(
-                onPressed: (txProv.txName.isEmpty || totalKg <= 0)
+                onPressed:
+                    (txProv.txName.isEmpty || (!hasItems && paidNow <= 0))
                     ? null
                     : () async {
                         final navigator = Navigator.of(context);
@@ -944,10 +956,25 @@ class _TransaksiFormScreenState extends State<TransaksiFormScreen> {
     );
   }
 
-  Widget _statusBox(int diff, bool paidTouched) {
+  Widget _statusBox(
+    int diff,
+    bool paidTouched, {
+    required bool hasItems,
+    required int paidNow,
+  }) {
     Color bgColor, textColor;
     String text;
-    if (!paidTouched) {
+    if (!hasItems) {
+      if (paidNow > 0) {
+        bgColor = AppTheme.paidBg;
+        textColor = AppTheme.paid;
+        text = 'Uang masuk ${rupiah(paidNow)}';
+      } else {
+        bgColor = Colors.grey[200]!;
+        textColor = AppTheme.ink;
+        text = 'Isi nominal dulu';
+      }
+    } else if (!paidTouched) {
       bgColor = AppTheme.debtBg;
       textColor = AppTheme.debt;
       text = 'Belum dibayar';

@@ -343,7 +343,10 @@ class _TransaksiTabState extends State<TransaksiTab> {
                             ),
                             ...txProv.daySales.map((sale) {
                               final items = txProv.getItemsForSale(sale.id!);
-                              final statusBadge = _buildStatusBadge(sale);
+                              final statusBadge = _buildStatusBadge(
+                                sale,
+                                noItems: items.isEmpty,
+                              );
                               return Container(
                                 padding: const EdgeInsets.symmetric(
                                   horizontal: 12,
@@ -851,14 +854,22 @@ class _TransaksiTabState extends State<TransaksiTab> {
           ),
         )
         .toList();
+    final isCashOnly = items.isEmpty;
+    final isOverpaid = sale.diff < 0;
     final result = await printerProv.printReceipt(
       items: receiptItems,
-      totalText: rupiahPlain(sale.roundedTotal),
+      totalText: isCashOnly ? rupiahPlain(0) : rupiahPlain(sale.roundedTotal),
       paidText: rupiahPlain(sale.paid),
-      changeText: sale.diff > 0
+      changeText: isCashOnly
+          ? rupiahPlain(sale.paid)
+          : sale.diff > 0
           ? 'Kurang ${rupiahPlain(sale.diff)}'
           : rupiahPlain(-sale.diff),
+      changeLabel: (isCashOnly || isOverpaid) ? 'BAYAR HUTANG' : 'KEMBALI',
       customerName: sale.name,
+      timestamp:
+          DateTime.tryParse(sale.createdAt ?? '') ??
+          DateTime.tryParse(sale.date),
     );
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -871,12 +882,16 @@ class _TransaksiTabState extends State<TransaksiTab> {
     );
   }
 
-  Widget _buildStatusBadge(Sale sale) {
+  Widget _buildStatusBadge(Sale sale, {bool noItems = false}) {
     final diff = sale.diff;
     Color bgColor, textColor;
     String text;
 
-    if (diff > 0) {
+    if (noItems) {
+      bgColor = AppTheme.paidBg;
+      textColor = AppTheme.paid;
+      text = 'Lebih ${rupiah(sale.paid)}';
+    } else if (diff > 0) {
       bgColor = AppTheme.debtBg;
       textColor = AppTheme.debt;
       text = 'Kurang ${rupiah(diff)}';
@@ -885,8 +900,8 @@ class _TransaksiTabState extends State<TransaksiTab> {
       textColor = AppTheme.paid;
       text = 'Lebih ${rupiah(-diff)}';
     } else {
-      bgColor = AppTheme.paidBg;
-      textColor = AppTheme.paid;
+      bgColor = AppTheme.lunasBg;
+      textColor = AppTheme.lunas;
       text = 'Lunas';
     }
     return Column(
@@ -1007,7 +1022,7 @@ class _TransaksiTabState extends State<TransaksiTab> {
     List<dynamic> items,
     TabProvider tabProv,
   ) {
-    final statusBadge = _buildStatusBadge(sale);
+    final statusBadge = _buildStatusBadge(sale, noItems: items.isEmpty);
     final totalKg = items.fold<double>(0, (s, i) => s + i.qty);
     final txProv = context.read<TransactionProvider>();
     return Container(
@@ -1199,6 +1214,9 @@ class _PayDialogState extends State<_PayDialog> {
   int _enteredAmount = 0;
   late TextEditingController _controllerPrev;
   int _enteredAmountPrev = 0;
+  late TextEditingController _controllerSecond;
+  int _enteredAmountSecond = 0;
+  bool _showSecond = false;
   Sale? _prevSale;
 
   bool get _showDual => widget.sale.debtPaid;
@@ -1209,6 +1227,7 @@ class _PayDialogState extends State<_PayDialog> {
     _controller = TextEditingController(text: widget.sale.paid.toString());
     _enteredAmount = widget.sale.paid;
     _controllerPrev = TextEditingController();
+    _controllerSecond = TextEditingController();
     if (widget.sale.debtPaid) {
       _loadPrevSale();
     }
@@ -1230,6 +1249,7 @@ class _PayDialogState extends State<_PayDialog> {
   void dispose() {
     _controller.dispose();
     _controllerPrev.dispose();
+    _controllerSecond.dispose();
     super.dispose();
   }
 
@@ -1353,6 +1373,53 @@ class _PayDialogState extends State<_PayDialog> {
                     setState(() => _enteredAmount = parsed);
                   },
                 ),
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: () => setState(() => _showSecond = !_showSecond),
+                    icon: Icon(
+                      _showSecond
+                          ? Icons.remove_circle_outline
+                          : Icons.add_circle_outline,
+                      size: 18,
+                    ),
+                    label: Text(
+                      _showSecond ? 'Hapus Bayar Ke-2' : 'Tambah Bayar Ke-2',
+                    ),
+                  ),
+                ),
+                if (_showSecond) ...[
+                  Text(
+                    'Bayar Ke-2 (Rp):',
+                    style: const TextStyle(fontSize: 14),
+                  ),
+                  TextField(
+                    controller: _controllerSecond,
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [RupiahInputFormatter()],
+                    decoration: const InputDecoration(hintText: '0'),
+                    onChanged: (val) {
+                      final parsed = parseRupiah(val);
+                      setState(() => _enteredAmountSecond = parsed);
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    _buildSummaryText(
+                      sale.roundedTotal,
+                      _enteredAmount + _enteredAmountSecond,
+                    ),
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      color: _summaryColor(
+                        sale.roundedTotal,
+                        _enteredAmount + _enteredAmountSecond,
+                      ),
+                    ),
+                  ),
+                ],
               ],
               if (showDual) ...[
                 const SizedBox(height: 8),
@@ -1423,7 +1490,8 @@ class _PayDialogState extends State<_PayDialog> {
                 widget.selectedDate,
               );
             } else {
-              final delta = _enteredAmount - sale.paid;
+              final totalPay = _enteredAmount + _enteredAmountSecond;
+              final delta = totalPay - sale.paid;
               await txProvider.payPartial(sale.id!, delta, widget.selectedDate);
             }
             widget.onPaid();
@@ -1436,5 +1504,19 @@ class _PayDialogState extends State<_PayDialog> {
         ),
       ],
     );
+  }
+
+  String _buildSummaryText(int roundedTotal, int totalPay) {
+    final selisih = roundedTotal - totalPay;
+    if (selisih > 0) return 'Sisa kurang: ${rupiah(selisih)}';
+    if (selisih < 0) return 'Lebih bayar: ${rupiah(-selisih)}';
+    return 'Lunas';
+  }
+
+  Color _summaryColor(int roundedTotal, int totalPay) {
+    final selisih = roundedTotal - totalPay;
+    if (selisih > 0) return AppTheme.debt;
+    if (selisih < 0) return AppTheme.paid;
+    return AppTheme.paid;
   }
 }

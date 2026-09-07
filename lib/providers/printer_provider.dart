@@ -65,14 +65,47 @@ class PrinterProvider extends ChangeNotifier {
   }
 
   // ── Settings setters ──
-  set autoPrint(bool v) { _autoPrint = v; _saveSettings(); _safeNotify(); }
-  set storeName(String v) { _storeName = v; _saveSettings(); _safeNotify(); }
-  set shopAddress(String v) { _address = v; _saveSettings(); _safeNotify(); }
-  set phone(String v) { _phone = v; _saveSettings(); _safeNotify(); }
-  set slogan(String v) { _slogan = v; _saveSettings(); _safeNotify(); }
-  set footer(String v) { _footer = v; _saveSettings(); _safeNotify(); }
+  set autoPrint(bool v) {
+    _autoPrint = v;
+    _saveSettings();
+    _safeNotify();
+  }
 
-  set logoPath(String v) { _logoPath = v; _saveSettings(); _safeNotify(); }
+  set storeName(String v) {
+    _storeName = v;
+    _saveSettings();
+    _safeNotify();
+  }
+
+  set shopAddress(String v) {
+    _address = v;
+    _saveSettings();
+    _safeNotify();
+  }
+
+  set phone(String v) {
+    _phone = v;
+    _saveSettings();
+    _safeNotify();
+  }
+
+  set slogan(String v) {
+    _slogan = v;
+    _saveSettings();
+    _safeNotify();
+  }
+
+  set footer(String v) {
+    _footer = v;
+    _saveSettings();
+    _safeNotify();
+  }
+
+  set logoPath(String v) {
+    _logoPath = v;
+    _saveSettings();
+    _safeNotify();
+  }
 
   // ── Persistence ──
   Map<String, dynamic> _toSettingsMap() => {
@@ -222,7 +255,9 @@ class PrinterProvider extends ChangeNotifier {
   }
 
   Future<void> resetBtSelection() async {
-    try { await disconnectBt(); } catch (_) {}
+    try {
+      await disconnectBt();
+    } catch (_) {}
     _selectedBtAddress = '';
     _selectedBtName = '';
     _connectionStatus = 'notConnected';
@@ -255,7 +290,9 @@ class PrinterProvider extends ChangeNotifier {
     required String totalText,
     required String paidText,
     required String changeText,
+    String changeLabel = 'KEMBALI',
     String customerName = '',
+    DateTime? timestamp,
   }) async {
     final connected = await ensureConnected();
     if (!connected) return false;
@@ -265,12 +302,14 @@ class PrinterProvider extends ChangeNotifier {
       totalText: totalText,
       paidText: paidText,
       changeText: changeText,
+      changeLabel: changeLabel,
       address: _address,
       phone: _phone,
       slogan: _slogan,
       footer: _footer,
       logoPath: _logoPath,
       customerName: customerName,
+      timestamp: timestamp,
     );
   }
 }

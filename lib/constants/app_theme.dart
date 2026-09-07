@@ -14,6 +14,8 @@ class AppTheme {
   static const Color debtBg = Color(0xFFFEE2E2);
   static const Color paid = Color(0xFF16A34A);
   static const Color paidBg = Color(0xFFDCFCE7);
+  static const Color lunas = Color(0xFF2563EB);
+  static const Color lunasBg = Color(0xFFDBEAFE);
   static const Color cardBg = Colors.white;
   static const Color sidebarBg = Color(0xFF1E293B);
   static const Color sidebarActive = Color(0xFF3B82F6);

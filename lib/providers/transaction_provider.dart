@@ -145,7 +145,7 @@ class TransactionProvider extends ChangeNotifier {
       }
     }
 
-    if (items.isEmpty || name.isEmpty) return;
+    if (name.isEmpty) return;
 
     final rawTotal = items.fold<int>(
       0,
@@ -154,11 +154,12 @@ class TransactionProvider extends ChangeNotifier {
           ((item['qty'] as double) * (item['product'] as Product).price)
               .round(),
     );
-    final roundedTotal = roundTotal(rawTotal);
     final paidStr = _txPaid.replaceAll('.', '').replaceAll(',', '');
     final paid = (_txPaidTouched && paidStr.isNotEmpty)
         ? (int.tryParse(paidStr) ?? 0)
         : 0;
+    final hasItems = items.isNotEmpty;
+    final roundedTotal = hasItems ? roundTotal(rawTotal) : paid;
     final diff = roundedTotal - paid;
 
     if (isEditing && _editingSaleId != null) {
@@ -299,6 +300,9 @@ class TransactionProvider extends ChangeNotifier {
       if (item.productId != null) {
         _txQty[item.productId!] = item.qty;
       }
+    }
+    if (saleItems.isEmpty) {
+      _txPaid = sale.paid.toString();
     }
     notifyListeners();
   }

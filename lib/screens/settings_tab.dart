@@ -929,7 +929,7 @@ class _ReceiptPreviewSheet extends StatelessWidget {
               Expanded(
                 child: Container(
                   width: 280,
-                  padding: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
                   decoration: BoxDecoration(
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(8),
@@ -955,11 +955,6 @@ class _ReceiptPreviewSheet extends StatelessWidget {
   }
 
   Widget _buildReceipt(PrinterProvider prov) {
-    final now = DateTime.now();
-    final dateStr =
-        '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year}';
-    final timeStr =
-        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -997,16 +992,6 @@ class _ReceiptPreviewSheet extends StatelessWidget {
             style: const TextStyle(fontSize: 10),
           ),
         const SizedBox(height: 4),
-        const Text(
-          '--------------------------------',
-          textAlign: TextAlign.center,
-          style: TextStyle(fontSize: 10, color: AppTheme.inkSoft),
-        ),
-        Text(
-          '$dateStr $timeStr',
-          textAlign: TextAlign.center,
-          style: const TextStyle(fontSize: 10),
-        ),
         const Text(
           '--------------------------------',
           textAlign: TextAlign.center,
