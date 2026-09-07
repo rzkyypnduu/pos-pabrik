@@ -965,7 +965,7 @@ class _ReceiptPreviewSheet extends StatelessWidget {
       children: [
         if (prov.logoPath.isNotEmpty && File(prov.logoPath).existsSync())
           Padding(
-            padding: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.only(bottom: 4),
             child: ClipRect(
               child: Align(
                 alignment: Alignment.center,
@@ -982,19 +982,19 @@ class _ReceiptPreviewSheet extends StatelessWidget {
         Text(
           prov.storeName.toUpperCase(),
           textAlign: TextAlign.center,
-          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
         ),
         if (prov.shopAddress.isNotEmpty)
           Text(
             prov.shopAddress,
             textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 11),
+            style: const TextStyle(fontSize: 10),
           ),
         if (prov.phone.isNotEmpty)
           Text(
             'Telp: ${prov.phone}',
             textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 11),
+            style: const TextStyle(fontSize: 10),
           ),
         const SizedBox(height: 4),
         const Text(
@@ -1035,7 +1035,7 @@ class _ReceiptPreviewSheet extends StatelessWidget {
         Text(
           prov.slogan.toUpperCase(),
           textAlign: TextAlign.center,
-          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
+          style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w800),
         ),
         if (prov.footer.isNotEmpty) ...[
           const SizedBox(height: 4),
@@ -1050,24 +1050,30 @@ class _ReceiptPreviewSheet extends StatelessWidget {
   }
 
   Widget _receiptItem(String name, String detail, String subtotal) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 2),
+    padding: const EdgeInsets.symmetric(vertical: 1),
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          name,
-          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-        ),
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(detail, style: const TextStyle(fontSize: 11)),
+            Expanded(
+              child: Text(
+                name,
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
             Text(
               subtotal,
               style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
             ),
           ],
         ),
+        if (detail.isNotEmpty)
+          Text('   $detail', style: const TextStyle(fontSize: 10)),
       ],
     ),
   );
@@ -1080,14 +1086,14 @@ class _ReceiptPreviewSheet extends StatelessWidget {
             Text(
               label,
               style: TextStyle(
-                fontSize: 12,
+                fontSize: 11,
                 fontWeight: bold ? FontWeight.w800 : FontWeight.w600,
               ),
             ),
             Text(
               value,
               style: TextStyle(
-                fontSize: 12,
+                fontSize: 11,
                 fontWeight: bold ? FontWeight.w800 : FontWeight.w600,
               ),
             ),

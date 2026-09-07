@@ -213,7 +213,6 @@ class PrinterService {
   List<int> _lineSpacing(int dots) => [0x1B, 0x33, dots];
 
   List<int> _normalText() => [0x1D, 0x21, 0x00];
-  List<int> _doubleWidth() => [0x1D, 0x21, 0x10];
   List<int> _doubleWidthHeight() => [0x1D, 0x21, 0x11];
 
   List<int> _boldOn() => [0x1B, 0x45, 0x01];
@@ -335,18 +334,21 @@ class PrinterService {
     final b = <int>[];
     b.addAll(_init());
     b.addAll(_setCodePage());
-    b.addAll(_lineSpacing(10));
+    b.addAll(_lineSpacing(8));
 
     // ── LOGO ──
     if (logoPath.isNotEmpty) {
       try {
         final logoFile = File(logoPath);
         if (await logoFile.exists()) {
-          final logoBytes = await _encodeLogoForPrinter(logoFile, paperWidth: paperWidth);
+          final logoBytes = await _encodeLogoForPrinter(
+            logoFile,
+            paperWidth: paperWidth,
+          );
           if (logoBytes != null) {
             b.addAll(_alignCenter());
             b.addAll(logoBytes);
-            b.addAll(_feedLines(1));
+            b.addAll(_feedLines(0));
           }
         }
       } catch (_) {}
@@ -355,9 +357,7 @@ class PrinterService {
     // ── HEADER ──
     b.addAll(_alignCenter());
     b.addAll(_boldOn());
-    b.addAll(_doubleWidthHeight());
     b.addAll(_wrapCenter(storeName.toUpperCase(), maxChars: 16));
-    b.addAll(_normalText());
     b.addAll(_boldOff());
 
     if (address.isNotEmpty) {
@@ -374,8 +374,8 @@ class PrinterService {
     if (customerName.isNotEmpty) {
       final now = DateTime.now();
       final dateStr = '${now.day}/${now.month}/${now.year}';
-      final timeStr = '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
-      b.addAll(_textLine('================================'));
+      final timeStr =
+          '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
       b.addAll(_alignLeft());
       b.addAll(_wrapLeft('Nama            : $customerName'));
       b.addAll(_textLine('Tanggal cetak   : $dateStr $timeStr'));
@@ -387,14 +387,12 @@ class PrinterService {
     b.addAll(_alignLeft());
     for (final item in items) {
       b.addAll(_boldOn());
-      b.addAll(_wrapLeft(item.name));
+      b.addAll(_twoCol(item.name, item.subtotal));
       b.addAll(_boldOff());
 
       if (item.detail.isNotEmpty) {
         b.addAll(_textLine('  ${item.detail}'));
       }
-
-      b.addAll(_twoCol('', item.subtotal));
     }
 
     b.addAll(_textLine('================================'));
@@ -402,9 +400,7 @@ class PrinterService {
     // ── TOTALS ──
     b.addAll(_alignRight());
     b.addAll(_boldOn());
-    b.addAll(_doubleWidth());
     b.addAll(_twoCol('TOTAL', totalText));
-    b.addAll(_normalText());
     b.addAll(_boldOff());
 
     b.addAll(_twoCol('BAYAR', paidText));
@@ -421,7 +417,7 @@ class PrinterService {
       b.addAll(_wrapCenter(footer));
     }
 
-    b.addAll(_feedLines(4));
+    b.addAll(_feedLines(3));
     b.addAll(_cut());
     b.addAll(_alignLeft());
     return b;
@@ -431,7 +427,10 @@ class PrinterService {
   //  LOGO ENCODING (GS v 0 - Raster Bit Image)
   // ════════════════════════════════════════════════════
 
-  Future<Uint8List?> _encodeLogoForPrinter(File logoFile, {int paperWidth = 384}) async {
+  Future<Uint8List?> _encodeLogoForPrinter(
+    File logoFile, {
+    int paperWidth = 384,
+  }) async {
     try {
       final bytes = await logoFile.readAsBytes();
       final image = img.decodeImage(bytes);
@@ -472,7 +471,8 @@ class PrinterService {
             final px = x * 8 + bit;
             if (px < scaledWidth) {
               final pixel = grayscale.getPixel(px, y);
-              final luminance = (0.299 * pixel.r + 0.587 * pixel.g + 0.114 * pixel.b).toInt();
+              final luminance =
+                  (0.299 * pixel.r + 0.587 * pixel.g + 0.114 * pixel.b).toInt();
               if (luminance < 160) {
                 byte |= (0x80 >> bit);
               }
@@ -504,9 +504,5 @@ class ReceiptItem {
   final String detail;
   final String subtotal;
 
-  const ReceiptItem({
-    required this.name,
-    this.detail = '',
-    this.subtotal = '',
-  });
+  const ReceiptItem({required this.name, this.detail = '', this.subtotal = ''});
 }
