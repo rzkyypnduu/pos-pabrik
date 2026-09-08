@@ -2345,12 +2345,18 @@ class _HutangPribadiSectionState extends State<_HutangPribadiSection> {
   final _nameController = TextEditingController();
   final _amountController = TextEditingController();
   final _noteController = TextEditingController();
+  final Map<String, TextEditingController> _editingControllers = {};
+  int? _editingId;
+  String? _editingField;
 
   @override
   void dispose() {
     _nameController.dispose();
     _amountController.dispose();
     _noteController.dispose();
+    for (final c in _editingControllers.values) {
+      c.dispose();
+    }
     super.dispose();
   }
 
@@ -2492,70 +2498,109 @@ class _HutangPribadiSectionState extends State<_HutangPribadiSection> {
     }
   }
 
-  void _showEditDialog(PersonalLedger pl, PersonalLedgerProvider plProv) {
-    final nameController = TextEditingController(text: pl.name);
-    final amountController = TextEditingController(text: pl.amount.toString());
-    final noteController = TextEditingController(text: pl.note ?? '');
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Edit Hutang Pribadi'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: nameController,
-                decoration: const InputDecoration(
-                  labelText: 'Nama',
-                  isDense: true,
-                ),
+  void _startEdit(PersonalLedger pl, String field, String initialValue) {
+    setState(() {
+      _editingId = pl.id;
+      _editingField = field;
+      _editingControllers[field] = TextEditingController(text: initialValue);
+    });
+  }
+
+  void _cancelEdit() {
+    setState(() {
+      _editingControllers.clear();
+      _editingId = null;
+      _editingField = null;
+    });
+  }
+
+  Future<void> _saveInlineEdit(
+    PersonalLedger pl,
+    String field,
+    PersonalLedgerProvider plProv,
+  ) async {
+    final controller = _editingControllers[field];
+    if (controller == null) return;
+    final name = field == 'name'
+        ? controller.text.trim()
+        : pl.name;
+    final amount = field == 'amount'
+        ? int.tryParse(controller.text.replaceAll('.', '')) ?? 0
+        : pl.amount;
+    final note = field == 'note'
+        ? controller.text.trim()
+        : pl.note ?? '';
+    if (name.isEmpty || amount <= 0) {
+      _cancelEdit();
+      return;
+    }
+    await plProv.updateEntry(pl.id!, name, amount, note);
+    widget.onSaved?.call();
+    if (mounted) {
+      setState(() {
+        _editingControllers.clear();
+        _editingId = null;
+        _editingField = null;
+      });
+    }
+  }
+
+  Widget _editableCell(
+    PersonalLedger pl,
+    String field,
+    String display,
+    PersonalLedgerProvider plProv, {
+    required String editValue,
+    bool bold = false,
+    TextStyle? style,
+    TextAlign textAlign = TextAlign.left,
+  }) {
+    if (_editingId == pl.id && _editingField == field) {
+      final controller = _editingControllers[field]!;
+      final isAmount = field == 'amount';
+      return Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: controller,
+              autofocus: true,
+              keyboardType: isAmount ? TextInputType.number : TextInputType.text,
+              inputFormatters:
+                  isAmount ? [RupiahInputFormatter()] : null,
+              textAlign: isAmount ? TextAlign.right : TextAlign.left,
+              style: style ?? const TextStyle(fontSize: 11),
+              decoration: const InputDecoration(
+                isDense: true,
+                contentPadding: EdgeInsets.symmetric(horizontal: 4, vertical: 4),
               ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: amountController,
-                keyboardType: TextInputType.number,
-                inputFormatters: [RupiahInputFormatter()],
-                decoration: const InputDecoration(
-                  labelText: 'Jumlah (Rp)',
-                  isDense: true,
-                ),
-              ),
-              const SizedBox(height: 8),
-              TextField(
-                controller: noteController,
-                decoration: const InputDecoration(
-                  labelText: 'Catatan',
-                  isDense: true,
-                ),
-              ),
-            ],
+              onTapOutside: (_) => FocusManager.instance.primaryFocus?.unfocus(),
+              onSubmitted: (_) => _saveInlineEdit(pl, field, plProv),
+            ),
           ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Batal'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              final name = nameController.text.trim();
-              final amount =
-                  int.tryParse(amountController.text.replaceAll('.', '')) ?? 0;
-              if (name.isNotEmpty && amount > 0) {
-                await plProv.updateEntry(
-                  pl.id!,
-                  name,
-                  amount,
-                  noteController.text,
-                );
-                widget.onSaved?.call();
-                if (ctx.mounted) Navigator.pop(ctx);
-              }
-            },
-            child: const Text('Simpan'),
+          SizedBox(
+            width: 28,
+            child: IconButton(
+              icon: const Icon(Icons.check, size: 18, color: AppTheme.paid),
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              onPressed: () => _saveInlineEdit(pl, field, plProv),
+            ),
           ),
         ],
+      );
+    }
+    return GestureDetector(
+      onTap: () => _startEdit(pl, field, editValue),
+      child: Text(
+        display,
+        style: style ??
+            TextStyle(
+              fontSize: 11,
+              fontWeight: bold ? FontWeight.w700 : FontWeight.w600,
+              color: AppTheme.accent,
+            ),
+        textAlign: textAlign,
+        overflow: TextOverflow.ellipsis,
       ),
     );
   }
@@ -2644,44 +2689,37 @@ class _HutangPribadiSectionState extends State<_HutangPribadiSection> {
                   ),
                   Expanded(
                     flex: 3,
-                    child: InkWell(
-                      onTap: () => _showEditDialog(pl, plProv),
-                      child: Text(
-                        pl.name,
-                        style: const TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: AppTheme.accent,
-                        ),
-                      ),
+                    child: _editableCell(
+                      pl,
+                      'name',
+                      pl.name,
+                      plProv,
+                      editValue: pl.name,
                     ),
                   ),
                   Expanded(
                     flex: 2,
-                    child: InkWell(
-                      onTap: () => _showEditDialog(pl, plProv),
-                      child: Text(
-                        rupiah(pl.amount),
-                        style: const TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
-                          color: AppTheme.accent,
-                        ),
-                        textAlign: TextAlign.right,
-                      ),
+                    child: _editableCell(
+                      pl,
+                      'amount',
+                      rupiah(pl.amount),
+                      plProv,
+                      editValue: pl.amount.toString(),
+                      bold: true,
+                      textAlign: TextAlign.right,
                     ),
                   ),
                   Expanded(
                     flex: 3,
-                    child: InkWell(
-                      onTap: () => _showEditDialog(pl, plProv),
-                      child: Text(
-                        pl.note ?? '-',
-                        style: const TextStyle(
-                          fontSize: 11,
-                          color: AppTheme.inkSoft,
-                        ),
-                        overflow: TextOverflow.ellipsis,
+                    child: _editableCell(
+                      pl,
+                      'note',
+                      pl.note ?? '-',
+                      plProv,
+                      editValue: pl.note ?? '',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: AppTheme.inkSoft,
                       ),
                     ),
                   ),

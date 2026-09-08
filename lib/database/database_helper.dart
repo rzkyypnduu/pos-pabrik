@@ -725,6 +725,9 @@ class DatabaseHelper {
   Future<int> updatePersonalLedger(PersonalLedger ledger) async {
     final db = await database;
     final data = ledger.toMap();
+    data.remove('id');
+    data.remove('date');
+    data.remove('created_at');
     data['updated_at'] = _now();
     return await db.update(
       'personal_ledgers',

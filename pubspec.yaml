@@ -1,7 +1,7 @@
 name: pos_krupuk
 description: "POS Krupuk - Point of Sale for Krupuk Business"
 publish_to: 'none'
-version: 1.0.14+1
+version: 1.0.15+15
 
 environment:
   sdk: ^3.12.2
@@ -39,7 +39,7 @@ msix_config:
   publisher_display_name: Rizky
   publisher: CN=POS_KRUPUK_DEVELOPER
   identity_name: com.rizky.pos-krupuk
-  msix_version: 1.0.14.0
+  msix_version: 1.0.15.0
   logo_path: assets/icon/icon.png
   capabilities: internetClient, location, bluetooth
 
