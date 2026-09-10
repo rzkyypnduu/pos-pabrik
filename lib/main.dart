@@ -58,6 +58,14 @@ void main() async {
         return AppExitResponse.exit;
       },
     );
+  } else {
+    AppLifecycleListener(
+      onStateChange: (state) {
+        if (state == AppLifecycleState.paused) {
+          backupProvider.backupOnClose();
+        }
+      },
+    );
   }
 
   runApp(PosKrupukApp(backupProvider: backupProvider));

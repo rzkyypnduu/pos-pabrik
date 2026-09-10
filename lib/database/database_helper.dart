@@ -98,7 +98,7 @@ class DatabaseHelper {
     }
     return await openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: _createDB,
       onUpgrade: _upgradeDB,
     );
@@ -125,6 +125,24 @@ class DatabaseHelper {
         await db.execute(
           'ALTER TABLE sales ADD COLUMN debt_paid_amount INTEGER DEFAULT 0',
         );
+      }
+    }
+    if (oldVersion < 4) {
+      final cols = await db.rawQuery('PRAGMA table_info(oil_stocks)');
+      final priceCol = cols.firstWhere(
+        (c) => c['name'] == 'price',
+        orElse: () => {},
+      );
+      if (priceCol.isNotEmpty &&
+          (priceCol['type'] as String?)?.toUpperCase() == 'INTEGER') {
+        await db.execute('ALTER TABLE oil_stocks RENAME TO oil_stocks_old');
+        await db.execute(
+          '''CREATE TABLE oil_stocks (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, qty REAL DEFAULT 0, price REAL DEFAULT 0, created_at TEXT, updated_at TEXT)''',
+        );
+        await db.execute(
+          'INSERT INTO oil_stocks (id, date, qty, price, created_at, updated_at) SELECT id, date, qty, price, created_at, updated_at FROM oil_stocks_old',
+        );
+        await db.execute('DROP TABLE oil_stocks_old');
       }
     }
   }

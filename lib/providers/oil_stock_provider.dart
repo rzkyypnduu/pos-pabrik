@@ -50,7 +50,7 @@ class OilStockProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> addOil(String date, double qty, int price) async {
+  Future<void> addOil(String date, double qty, double price) async {
     final existing = _currentDateStock;
     if (existing != null && existing.date == date && !_isCarryForward) {
       await DatabaseHelper.instance.updateOilStock(OilStock(

@@ -9,7 +9,7 @@ class RingkasanProvider extends ChangeNotifier {
   int totalRemain = 0;
   int totalHutangPel = 0;
   int totalHutangPri = 0;
-  int totalSaldo = 0;
+  double totalSaldo = 0;
   int grand = 0;
 
   Map<String, dynamic>? daily;
@@ -81,7 +81,7 @@ class RingkasanProvider extends ChangeNotifier {
       range[0],
       range[1],
     );
-    totalSaldo = saldoLogs.fold<int>(0, (sum, s) => sum + s.result);
+    totalSaldo = saldoLogs.fold<double>(0, (sum, s) => sum + s.result);
 
     grand = totalOil + totalStockMgmt + totalRemain + totalHutangPel;
 
@@ -117,7 +117,7 @@ class RingkasanProvider extends ChangeNotifier {
           (sum, l) => sum + (l.type == 'tambah' ? l.amount : -l.amount),
         ),
         'hutangPri': dayPersonal.fold<int>(0, (sum, l) => sum + l.amount),
-        'saldo': daySaldo.fold<int>(0, (sum, s) => sum + s.result),
+        'saldo': daySaldo.fold<double>(0, (sum, s) => sum + s.result),
       };
     } else {
       daily = null;

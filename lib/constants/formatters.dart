@@ -21,9 +21,13 @@ String rupiahPlain(int? amount) {
   return formatter.format(val).trim();
 }
 
-/// Adds thousand separators (dots) to integer input as user types.
-/// Strips non-digits on commit.
+/// Adds thousand separators (dots) to input as user types.
+/// When [allowDecimal] is true, one comma is allowed as decimal separator.
 class RupiahInputFormatter extends TextInputFormatter {
+  final bool allowDecimal;
+  final int maxDecimals;
+  RupiahInputFormatter({this.allowDecimal = false, this.maxDecimals = 1});
+
   @override
   TextEditingValue formatEditUpdate(
     TextEditingValue oldValue,
@@ -32,30 +36,115 @@ class RupiahInputFormatter extends TextInputFormatter {
     if (newValue.text.isEmpty) {
       return newValue;
     }
-    final digits = newValue.text.replaceAll(RegExp(r'[^0-9]'), '');
-    if (digits.isEmpty) {
-      return const TextEditingValue();
+
+    if (!allowDecimal) {
+      final digits = newValue.text.replaceAll(RegExp(r'[^0-9]'), '');
+      if (digits.isEmpty) return const TextEditingValue();
+      final formatted = _addDots(digits);
+      return TextEditingValue(
+        text: formatted,
+        selection: TextSelection.collapsed(offset: formatted.length),
+      );
     }
-    final formatted = _addDots(digits);
+
+    final text = newValue.text;
+    final hasComma = text.contains(',');
+    String integerPart;
+    String decimalPart = '';
+
+    if (hasComma) {
+      final parts = text.split(',');
+      integerPart = parts[0].replaceAll(RegExp(r'[^0-9]'), '');
+      if (parts.length > 1) {
+        final rawDecimal = parts[1].replaceAll(RegExp(r'[^0-9]'), '');
+        decimalPart = rawDecimal.length > maxDecimals
+            ? rawDecimal.substring(0, maxDecimals)
+            : rawDecimal;
+      }
+    } else {
+      integerPart = text.replaceAll(RegExp(r'[^0-9]'), '');
+    }
+
+    if (integerPart.isEmpty && !hasComma) return const TextEditingValue();
+    if (integerPart.isEmpty) integerPart = '0';
+
+    final formatted = hasComma
+        ? '${_addDots(integerPart)},$decimalPart'
+        : _addDots(integerPart);
+
+    final oldText = oldValue.text;
+    final oldCursor = newValue.selection.end;
+    int newCursor = formatted.length;
+
+    if (oldText.isNotEmpty && oldCursor > 0) {
+      final textBeforeCursor = oldText.substring(0, oldCursor.clamp(0, oldText.length));
+      final digitsBeforeCursor = textBeforeCursor.replaceAll(RegExp(r'[^0-9]'), '');
+      int count = 0;
+      for (int i = 0; i < formatted.length; i++) {
+        if (RegExp(r'[0-9]').hasMatch(formatted[i])) count++;
+        if (count == digitsBeforeCursor.length + 1) {
+          newCursor = i + 1;
+          break;
+        }
+      }
+    }
+
     return TextEditingValue(
       text: formatted,
-      selection: TextSelection.collapsed(offset: formatted.length),
+      selection: TextSelection.collapsed(offset: newCursor.clamp(0, formatted.length)),
     );
   }
+}
 
-  String _addDots(String digits) {
-    final buf = StringBuffer();
-    for (var i = 0; i < digits.length; i++) {
-      if (i > 0 && (digits.length - i) % 3 == 0) buf.write('.');
-      buf.write(digits[i]);
-    }
-    return buf.toString();
+String _addDots(String digits) {
+  final buf = StringBuffer();
+  for (var i = 0; i < digits.length; i++) {
+    if (i > 0 && (digits.length - i) % 3 == 0) buf.write('.');
+    buf.write(digits[i]);
   }
+  return buf.toString();
 }
 
 /// Extracts the integer value from a dot-formatted Rupiah string.
 int parseRupiah(String text) {
   return int.tryParse(text.replaceAll('.', '').replaceAll(',', '')) ?? 0;
+}
+
+/// Parses text produced by [RupiahInputFormatter] (dots as thousand
+/// separators, comma as decimal separator) into a [double].
+double parseNumInput(String text) {
+  return double.tryParse(
+        text.replaceAll('.', '').replaceAll(',', '.'),
+      ) ??
+      0;
+}
+
+/// Formats [value] the same way [RupiahInputFormatter] would, so a value
+/// like `18000.5` is shown as `18.000,5`.
+String rupiahInputText(num value, {int decimals = 1}) {
+  final rounded = value.round();
+  if (value == rounded) {
+    return _addDots(rounded.toString());
+  }
+  final whole = value.floor();
+  final factor = 10 * decimals;
+  final dec = ((value - whole) * factor).round();
+  return '${_addDots(whole.toString())},$dec';
+}
+
+/// Rupiah formatter that keeps one decimal digit when [amount] is not a
+/// whole number.
+String rupiahD(num? amount) {
+  final val = amount ?? 0;
+  if (val == val.roundToDouble()) {
+    return rupiah(val.toInt());
+  }
+  final formatter = NumberFormat.currency(
+    locale: 'id_ID',
+    symbol: 'Rp',
+    decimalDigits: 1,
+  );
+  return formatter.format(val);
 }
 
 String fmtKg(double? qty) {

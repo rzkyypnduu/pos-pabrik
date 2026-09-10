@@ -1,8 +1,8 @@
 class SaldoDeduction {
   final int? id;
   final String? date;
-  final int a;
-  final int b;
+  final double a;
+  final double b;
   final String? note;
   final String? createdAt;
   final String? updatedAt;
@@ -17,7 +17,7 @@ class SaldoDeduction {
     this.updatedAt,
   });
 
-  int get result => a - b;
+  double get result => a - b;
 
   Map<String, dynamic> toMap() {
     return {
@@ -35,8 +35,8 @@ class SaldoDeduction {
     return SaldoDeduction(
       id: map['id'] as int?,
       date: map['date'] as String?,
-      a: (map['a'] as num?)?.toInt() ?? 0,
-      b: (map['b'] as num?)?.toInt() ?? 0,
+      a: (map['a'] as num?)?.toDouble() ?? 0,
+      b: (map['b'] as num?)?.toDouble() ?? 0,
       note: map['note'] as String?,
       createdAt: map['created_at'] as String?,
       updatedAt: map['updated_at'] as String?,

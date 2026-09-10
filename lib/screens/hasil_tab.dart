@@ -39,9 +39,19 @@ class _HasilTabState extends State<HasilTab> {
   final saldoAController = TextEditingController();
   final saldoBController = TextEditingController();
 
+  // Track which controller has focus to avoid overwriting user input
+  final _oilQtyFocusNode = FocusNode();
+  final _oilPriceFocusNode = FocusNode();
+  final _saldoAFocusNode = FocusNode();
+  final _saldoBFocusNode = FocusNode();
+
   @override
   void initState() {
     super.initState();
+    _oilQtyFocusNode.addListener(() => setState(() {}));
+    _oilPriceFocusNode.addListener(() => setState(() {}));
+    _saldoAFocusNode.addListener(() => setState(() {}));
+    _saldoBFocusNode.addListener(() => setState(() {}));
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadData());
   }
 
@@ -61,6 +71,19 @@ class _HasilTabState extends State<HasilTab> {
     if (!_loaded) {
       _loaded = true;
     }
+  }
+
+  @override
+  void dispose() {
+    _oilQtyFocusNode.dispose();
+    _oilPriceFocusNode.dispose();
+    _saldoAFocusNode.dispose();
+    _saldoBFocusNode.dispose();
+    oilQtyController.dispose();
+    oilPriceController.dispose();
+    saldoAController.dispose();
+    saldoBController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadData() async {
@@ -100,32 +123,35 @@ class _HasilTabState extends State<HasilTab> {
     if (!mounted) return;
 
     if (oilProv.currentDateStock != null) {
-      oilQtyController.text = oilProv.currentDateStock!.qty > 0
-          ? oilProv.currentDateStock!.qty.toStringAsFixed(
-              oilProv.currentDateStock!.qty ==
-                      oilProv.currentDateStock!.qty.roundToDouble()
-                  ? 0
-                  : 1,
-            )
-          : '';
-      oilPriceController.text = oilProv.currentDateStock!.price > 0
-          ? oilProv.currentDateStock!.price.toString()
-          : '';
+      if (!_oilQtyFocusNode.hasFocus) {
+        oilQtyController.text = oilProv.currentDateStock!.qty > 0
+            ? rupiahInputText(oilProv.currentDateStock!.qty)
+            : '';
+      }
+      if (!_oilPriceFocusNode.hasFocus) {
+        oilPriceController.text = oilProv.currentDateStock!.price > 0
+            ? rupiahInputText(oilProv.currentDateStock!.price)
+            : '';
+      }
     } else {
-      oilQtyController.clear();
-      oilPriceController.clear();
+      if (!_oilQtyFocusNode.hasFocus) oilQtyController.clear();
+      if (!_oilPriceFocusNode.hasFocus) oilPriceController.clear();
     }
 
     if (sdProv.currentDateLog != null) {
-      saldoAController.text = sdProv.currentDateLog!.a > 0
-          ? sdProv.currentDateLog!.a.toString()
-          : '';
-      saldoBController.text = sdProv.currentDateLog!.b > 0
-          ? sdProv.currentDateLog!.b.toString()
-          : '';
+      if (!_saldoAFocusNode.hasFocus) {
+        saldoAController.text = sdProv.currentDateLog!.a > 0
+            ? rupiahInputText(sdProv.currentDateLog!.a)
+            : '';
+      }
+      if (!_saldoBFocusNode.hasFocus) {
+        saldoBController.text = sdProv.currentDateLog!.b > 0
+            ? rupiahInputText(sdProv.currentDateLog!.b)
+            : '';
+      }
     } else {
-      saldoAController.clear();
-      saldoBController.clear();
+      if (!_saldoAFocusNode.hasFocus) saldoAController.clear();
+      if (!_saldoBFocusNode.hasFocus) saldoBController.clear();
     }
 
     await ringProv.calculate(
@@ -240,6 +266,8 @@ class _HasilTabState extends State<HasilTab> {
                   qtyController: oilQtyController,
                   priceController: oilPriceController,
                   onSaved: _refreshData,
+                  qtyFocusNode: _oilQtyFocusNode,
+                  priceFocusNode: _oilPriceFocusNode,
                 ),
                 const SizedBox(height: 10),
                 _ManajemenStokSection(onSaved: _refreshData),
@@ -256,6 +284,8 @@ class _HasilTabState extends State<HasilTab> {
                   aController: saldoAController,
                   bController: saldoBController,
                   onSaved: _refreshData,
+                  aFocusNode: _saldoAFocusNode,
+                  bFocusNode: _saldoBFocusNode,
                 ),
                 const SizedBox(height: 16),
 
@@ -332,7 +362,7 @@ class _HutangPelangganSectionState extends State<_HutangPelangganSection> {
   Widget _editableSisaCell(int? id, int remaining, {bool alignLeft = false}) {
     if (id == null) {
       return Text(
-        rupiah(remaining),
+        rupiahD(remaining),
         textAlign: alignLeft ? TextAlign.left : TextAlign.right,
         style: const TextStyle(
           fontFamily: 'monospace',
@@ -364,7 +394,7 @@ class _HutangPelangganSectionState extends State<_HutangPelangganSection> {
                 : MainAxisAlignment.end,
             children: [
               Text(
-                rupiah(remaining),
+                rupiahD(remaining),
                 softWrap: false,
                 style: const TextStyle(
                   fontFamily: 'monospace',
@@ -652,7 +682,7 @@ class _HutangPelangganSectionState extends State<_HutangPelangganSection> {
               padding: const EdgeInsets.symmetric(horizontal: 12),
               alignment: Alignment.centerRight,
               child: Text(
-                rupiah(totals[entry.value] ?? 0),
+                rupiahD(totals[entry.value] ?? 0),
                 style: const TextStyle(
                   fontFamily: 'monospace',
                   fontSize: 13,
@@ -924,7 +954,8 @@ class _HutangPelangganSectionState extends State<_HutangPelangganSection> {
             TextField(
               controller: _addAmountController,
               keyboardType: TextInputType.number,
-              inputFormatters: [RupiahInputFormatter()],
+              textInputAction: TextInputAction.next,
+              inputFormatters: [RupiahInputFormatter(allowDecimal: true)],
               decoration: const InputDecoration(
                 labelText: 'Jumlah Hutang (Rp)',
               ),
@@ -932,6 +963,7 @@ class _HutangPelangganSectionState extends State<_HutangPelangganSection> {
             const SizedBox(height: 12),
             TextField(
               controller: _addNoteController,
+              textInputAction: TextInputAction.done,
               decoration: const InputDecoration(
                 labelText: 'Catatan (opsional)',
               ),
@@ -947,7 +979,7 @@ class _HutangPelangganSectionState extends State<_HutangPelangganSection> {
             onPressed: () async {
               final name = _addNameController.text.trim();
               final amount =
-                  int.tryParse(_addAmountController.text.replaceAll('.', '')) ??
+                  int.tryParse(_addAmountController.text.split(',').first.replaceAll('.', '')) ??
                   0;
               if (name.isNotEmpty && amount > 0) {
                 await prov.addDebt(
@@ -972,11 +1004,15 @@ class _StokMinyakSection extends StatefulWidget {
   final TextEditingController qtyController;
   final TextEditingController priceController;
   final VoidCallback? onSaved;
+  final FocusNode? qtyFocusNode;
+  final FocusNode? priceFocusNode;
 
   const _StokMinyakSection({
     required this.qtyController,
     required this.priceController,
     this.onSaved,
+    this.qtyFocusNode,
+    this.priceFocusNode,
   });
 
   @override
@@ -985,10 +1021,8 @@ class _StokMinyakSection extends StatefulWidget {
 
 class _StokMinyakSectionState extends State<_StokMinyakSection> {
   void _save() async {
-    final qty =
-        double.tryParse(widget.qtyController.text.replaceAll(',', '.')) ?? 0;
-    final price =
-        int.tryParse(widget.priceController.text.replaceAll('.', '')) ?? 0;
+    final qty = parseNumInput(widget.qtyController.text);
+    final price = parseNumInput(widget.priceController.text);
     if (qty > 0) {
       final oilProv = context.read<OilStockProvider>();
       final selectedDate = context.read<TabProvider>().selectedDate;
@@ -1020,7 +1054,10 @@ class _StokMinyakSectionState extends State<_StokMinyakSection> {
                     children: [
                       TextField(
                         controller: widget.qtyController,
+                        focusNode: widget.qtyFocusNode,
                         keyboardType: TextInputType.number,
+                        textInputAction: TextInputAction.next,
+                        inputFormatters: [RupiahInputFormatter(allowDecimal: true)],
                         decoration: const InputDecoration(
                           labelText: 'Jumlah (liter/kg)',
                           isDense: true,
@@ -1030,13 +1067,16 @@ class _StokMinyakSectionState extends State<_StokMinyakSection> {
                       const SizedBox(height: 8),
                       TextField(
                         controller: widget.priceController,
+                        focusNode: widget.priceFocusNode,
                         keyboardType: TextInputType.number,
-                        inputFormatters: [RupiahInputFormatter()],
+                        textInputAction: TextInputAction.done,
+                        inputFormatters: [RupiahInputFormatter(allowDecimal: true)],
                         decoration: const InputDecoration(
                           labelText: 'Harga (Rp)',
                           isDense: true,
                         ),
                         onChanged: (_) => setState(() {}),
+                        onSubmitted: (_) => _save(),
                       ),
                       const SizedBox(height: 12),
                       Row(
@@ -1050,18 +1090,9 @@ class _StokMinyakSectionState extends State<_StokMinyakSection> {
                             ),
                           ),
                           Text(
-                            rupiah(
-                              ((double.tryParse(
-                                            widget.qtyController.text
-                                                .replaceAll(',', '.'),
-                                          ) ??
-                                          0) *
-                                      (int.tryParse(
-                                            widget.priceController.text
-                                                .replaceAll('.', ''),
-                                          ) ??
-                                          0))
-                                  .round(),
+                            rupiahD(
+                              parseNumInput(widget.qtyController.text) *
+                                      parseNumInput(widget.priceController.text),
                             ),
                             style: const TextStyle(
                               fontFamily: 'monospace',
@@ -1084,7 +1115,10 @@ class _StokMinyakSectionState extends State<_StokMinyakSection> {
                       Expanded(
                         child: TextField(
                           controller: widget.qtyController,
+                          focusNode: widget.qtyFocusNode,
                           keyboardType: TextInputType.number,
+                          textInputAction: TextInputAction.next,
+                          inputFormatters: [RupiahInputFormatter(allowDecimal: true)],
                           decoration: const InputDecoration(
                             labelText: 'Jumlah (liter/kg)',
                             isDense: true,
@@ -1097,8 +1131,10 @@ class _StokMinyakSectionState extends State<_StokMinyakSection> {
                       Expanded(
                         child: TextField(
                           controller: widget.priceController,
+                          focusNode: widget.priceFocusNode,
                           keyboardType: TextInputType.number,
-                          inputFormatters: [RupiahInputFormatter()],
+                          textInputAction: TextInputAction.done,
+                          inputFormatters: [RupiahInputFormatter(allowDecimal: true)],
                           decoration: const InputDecoration(
                             labelText: 'Harga (Rp)',
                             isDense: true,
@@ -1109,22 +1145,9 @@ class _StokMinyakSectionState extends State<_StokMinyakSection> {
                       ),
                       const SizedBox(width: 12),
                       Text(
-                        rupiah(
-                          ((double.tryParse(
-                                        widget.qtyController.text.replaceAll(
-                                          ',',
-                                          '.',
-                                        ),
-                                      ) ??
-                                      0) *
-                                  (int.tryParse(
-                                        widget.priceController.text.replaceAll(
-                                          '.',
-                                          '',
-                                        ),
-                                      ) ??
-                                      0))
-                              .round(),
+                        rupiahD(
+                          parseNumInput(widget.qtyController.text) *
+                                  parseNumInput(widget.priceController.text),
                         ),
                         style: const TextStyle(
                           fontFamily: 'monospace',
@@ -1222,7 +1245,7 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
                     if (isMobile)
                       Flexible(
                         child: Text(
-                          'Bulan: ${rupiah(smProv.monthTotal)}',
+                          'Bulan: ${rupiahD(smProv.monthTotal)}',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
@@ -1234,7 +1257,7 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
                       )
                     else
                       Text(
-                        'Bulan: ${rupiah(smProv.monthTotal)}',
+                        'Bulan: ${rupiahD(smProv.monthTotal)}',
                         style: const TextStyle(
                           fontFamily: 'monospace',
                           fontWeight: FontWeight.w700,
@@ -1249,6 +1272,7 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
                     children: [
                       TextField(
                         controller: _nameController,
+                        textInputAction: TextInputAction.next,
                         decoration: const InputDecoration(
                           labelText: 'Nama Pemegang',
                           isDense: true,
@@ -1258,7 +1282,8 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
                       TextField(
                         controller: _priceController,
                         keyboardType: TextInputType.number,
-                        inputFormatters: [RupiahInputFormatter()],
+                        textInputAction: TextInputAction.done,
+                        inputFormatters: [RupiahInputFormatter(allowDecimal: true)],
                         decoration: const InputDecoration(
                           labelText: 'Harga/sak (Rp)',
                           isDense: true,
@@ -1272,6 +1297,7 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
                       Expanded(
                         child: TextField(
                           controller: _nameController,
+                          textInputAction: TextInputAction.next,
                           decoration: const InputDecoration(
                             labelText: 'Nama Pemegang',
                             isDense: true,
@@ -1283,7 +1309,8 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
                         child: TextField(
                           controller: _priceController,
                           keyboardType: TextInputType.number,
-                          inputFormatters: [RupiahInputFormatter()],
+                          textInputAction: TextInputAction.done,
+                          inputFormatters: [RupiahInputFormatter(allowDecimal: true)],
                           decoration: const InputDecoration(
                             labelText: 'Harga/sak (Rp)',
                             isDense: true,
@@ -1351,7 +1378,7 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
 
   void _save() async {
     final name = _nameController.text.trim();
-    final price = int.tryParse(_priceController.text.replaceAll('.', '')) ?? 0;
+    final price = int.tryParse(_priceController.text.split(',').first.replaceAll('.', '')) ?? 0;
     final sacks = _sackControllers
         .map((c) => double.tryParse(c.text.replaceAll(',', '.')) ?? 0)
         .where((v) => v > 0)
@@ -1428,7 +1455,7 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
                 ),
                 const SizedBox(width: 8),
                 Text(
-                  rupiah(holderTotal),
+                  rupiahD(holderTotal),
                   style: const TextStyle(
                     color: AppTheme.debt,
                     fontWeight: FontWeight.w700,
@@ -1524,7 +1551,7 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
                   );
                   final batchPrice =
                       (batch['price'] as num?)?.toInt() ?? sm.price;
-                  final batchSubtotal = (batchQty * batchPrice).round();
+                  final batchSubtotal = batchQty * batchPrice;
                   final editKey = '${sm.id}_$batchId';
                   final isEditing = _editingBatchKey == editKey;
                   final isPriceEditing = _editingPriceKey == editKey;
@@ -1601,7 +1628,7 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
                                   controller: _editPriceControllers[editKey],
                                   autofocus: true,
                                   keyboardType: TextInputType.number,
-                                  inputFormatters: [RupiahInputFormatter()],
+                                  inputFormatters: [RupiahInputFormatter(allowDecimal: true)],
                                   style: const TextStyle(
                                     fontFamily: 'monospace',
                                     fontSize: 11,
@@ -1624,7 +1651,7 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
                                     });
                                   },
                                   child: Text(
-                                    rupiah(batchPrice),
+                                    rupiahD(batchPrice),
                                     style: const TextStyle(
                                       fontFamily: 'monospace',
                                       fontSize: 11,
@@ -1636,7 +1663,7 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
                         Expanded(
                           flex: 2,
                           child: Text(
-                            rupiah(batchSubtotal),
+                            rupiahD(batchSubtotal),
                             style: const TextStyle(
                               fontFamily: 'monospace',
                               fontSize: 11,
@@ -1691,6 +1718,7 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
             TextField(
               controller: sackController,
               keyboardType: TextInputType.number,
+              textInputAction: TextInputAction.next,
               decoration: const InputDecoration(
                 labelText: 'Jumlah kg',
                 isDense: true,
@@ -1701,7 +1729,8 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
             TextField(
               controller: priceController,
               keyboardType: TextInputType.number,
-              inputFormatters: [RupiahInputFormatter()],
+              textInputAction: TextInputAction.done,
+              inputFormatters: [RupiahInputFormatter(allowDecimal: true)],
               decoration: const InputDecoration(
                 labelText: 'Harga per sak (Rp)',
                 isDense: true,
@@ -1720,7 +1749,7 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
                   double.tryParse(sackController.text.replaceAll(',', '.')) ??
                   0;
               final price =
-                  int.tryParse(priceController.text.replaceAll('.', '')) ??
+                  int.tryParse(priceController.text.split(',').first.replaceAll('.', '')) ??
                   defaultPrice;
               if (kg > 0) {
                 await smProv.addStockMgmt(
@@ -1767,7 +1796,7 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
   ) async {
     final controller = _editPriceControllers['${itemId}_$batchId'];
     if (controller == null) return;
-    final newPrice = int.tryParse(controller.text.replaceAll('.', '')) ?? 0;
+    final newPrice = int.tryParse(controller.text.split(',').first.replaceAll('.', '')) ?? 0;
     if (newPrice > 0) {
       await smProv.updateBatchPrice(itemId, batchId, newPrice);
     }
@@ -1778,7 +1807,7 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
 
   Widget _buildTotalRow(List<StockManagement> items) {
     double totalKg = 0;
-    int totalSub = 0;
+    double totalSub = 0;
     for (final sm in items) {
       for (final batch in (sm.batches ?? [])) {
         final sacks = (batch['sacks'] as List?) ?? [];
@@ -1788,7 +1817,7 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
         );
         final batchPrice = (batch['price'] as num?)?.toInt() ?? sm.price;
         totalKg += batchQty;
-        totalSub += (batchQty * batchPrice).round();
+        totalSub += batchQty * batchPrice;
       }
     }
     return Container(
@@ -1819,7 +1848,7 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
           Expanded(
             flex: 2,
             child: Text(
-              rupiah(totalSub),
+              rupiahD(totalSub),
               style: const TextStyle(
                 fontFamily: 'monospace',
                 fontSize: 11,
@@ -1889,7 +1918,7 @@ class _SisaBarangSectionState extends State<_SisaBarangSection> {
                       ),
                     ),
                     Text(
-                      'Total: ${rupiah(srProv.monthTotal)}',
+                      'Total: ${rupiahD(srProv.monthTotal)}',
                       style: const TextStyle(
                         fontFamily: 'monospace',
                         fontWeight: FontWeight.w700,
@@ -1930,10 +1959,11 @@ class _SisaBarangSectionState extends State<_SisaBarangSection> {
                           }
                         }),
                       ),
-                      if (_isCustom) ...[
+                        if (_isCustom) ...[
                         const SizedBox(height: 8),
                         TextField(
                           controller: _nameController,
+                          textInputAction: TextInputAction.next,
                           decoration: const InputDecoration(
                             labelText: 'Nama Barang',
                             isDense: true,
@@ -1947,6 +1977,7 @@ class _SisaBarangSectionState extends State<_SisaBarangSection> {
                             child: TextField(
                               controller: _qtyController,
                               keyboardType: TextInputType.number,
+                              textInputAction: TextInputAction.next,
                               decoration: const InputDecoration(
                                 labelText: 'Kg',
                                 isDense: true,
@@ -1958,7 +1989,8 @@ class _SisaBarangSectionState extends State<_SisaBarangSection> {
                             child: TextField(
                               controller: _priceController,
                               keyboardType: TextInputType.number,
-                              inputFormatters: [RupiahInputFormatter()],
+                              textInputAction: TextInputAction.done,
+                              inputFormatters: [RupiahInputFormatter(allowDecimal: true)],
                               decoration: const InputDecoration(
                                 labelText: 'Harga (Rp)',
                                 isDense: true,
@@ -2025,6 +2057,7 @@ class _SisaBarangSectionState extends State<_SisaBarangSection> {
                         child: TextField(
                           controller: _qtyController,
                           keyboardType: TextInputType.number,
+                          textInputAction: TextInputAction.next,
                           decoration: const InputDecoration(
                             labelText: 'Jumlah (kg)',
                             isDense: true,
@@ -2036,7 +2069,8 @@ class _SisaBarangSectionState extends State<_SisaBarangSection> {
                         child: TextField(
                           controller: _priceController,
                           keyboardType: TextInputType.number,
-                          inputFormatters: [RupiahInputFormatter()],
+                          textInputAction: TextInputAction.done,
+                          inputFormatters: [RupiahInputFormatter(allowDecimal: true)],
                           decoration: const InputDecoration(
                             labelText: 'Harga (Rp)',
                             isDense: true,
@@ -2071,7 +2105,7 @@ class _SisaBarangSectionState extends State<_SisaBarangSection> {
               .where((p) => p.id == _selectedProductId)
               .firstOrNull
               ?.name;
-    final price = int.tryParse(_priceController.text.replaceAll('.', '')) ?? 0;
+    final price = int.tryParse(_priceController.text.split(',').first.replaceAll('.', '')) ?? 0;
     final qty = double.tryParse(_qtyController.text.replaceAll(',', '.')) ?? 0;
     if (name != null && name.isNotEmpty) {
       final selectedDate = context.read<TabProvider>().selectedDate;
@@ -2238,7 +2272,7 @@ class _SisaBarangSectionState extends State<_SisaBarangSection> {
                             ),
                             autofocus: true,
                             keyboardType: TextInputType.number,
-                            inputFormatters: [RupiahInputFormatter()],
+                            inputFormatters: [RupiahInputFormatter(allowDecimal: true)],
                             style: const TextStyle(
                               fontSize: 11,
                               fontFamily: 'monospace',
@@ -2258,7 +2292,7 @@ class _SisaBarangSectionState extends State<_SisaBarangSection> {
                                   );
                             }),
                             child: Text(
-                              rupiah(sr.price),
+                              rupiahD(sr.price),
                               style: const TextStyle(
                                 fontSize: 11,
                                 color: AppTheme.debt,
@@ -2269,7 +2303,7 @@ class _SisaBarangSectionState extends State<_SisaBarangSection> {
                   Expanded(
                     flex: 2,
                     child: Text(
-                      rupiah(sr.subtotal),
+                      rupiahD(sr.subtotal),
                       style: const TextStyle(
                         fontSize: 11,
                         fontWeight: FontWeight.w600,
@@ -2318,7 +2352,7 @@ class _SisaBarangSectionState extends State<_SisaBarangSection> {
   void _savePriceEdit(StockRemaining sr) async {
     final controller = _editPriceControllers[sr.id];
     if (controller == null) return;
-    final newPrice = int.tryParse(controller.text.replaceAll('.', '')) ?? 0;
+    final newPrice = int.tryParse(controller.text.split(',').first.replaceAll('.', '')) ?? 0;
     final srProv = context.read<StockRemainingProvider>();
     await srProv.updateRemain(
       sr.id!,
@@ -2382,7 +2416,7 @@ class _HutangPribadiSectionState extends State<_HutangPribadiSection> {
                       ),
                     ),
                     Text(
-                      'Total: ${rupiah(plProv.monthTotal)}',
+                      'Total: ${rupiahD(plProv.monthTotal)}',
                       style: const TextStyle(
                         fontFamily: 'monospace',
                         fontWeight: FontWeight.w700,
@@ -2397,6 +2431,7 @@ class _HutangPribadiSectionState extends State<_HutangPribadiSection> {
                     children: [
                       TextField(
                         controller: _nameController,
+                        textInputAction: TextInputAction.next,
                         decoration: const InputDecoration(
                           labelText: 'Nama',
                           isDense: true,
@@ -2406,7 +2441,8 @@ class _HutangPribadiSectionState extends State<_HutangPribadiSection> {
                       TextField(
                         controller: _amountController,
                         keyboardType: TextInputType.number,
-                        inputFormatters: [RupiahInputFormatter()],
+                        textInputAction: TextInputAction.next,
+                        inputFormatters: [RupiahInputFormatter(allowDecimal: true)],
                         decoration: const InputDecoration(
                           labelText: 'Jumlah (Rp)',
                           isDense: true,
@@ -2415,6 +2451,7 @@ class _HutangPribadiSectionState extends State<_HutangPribadiSection> {
                       const SizedBox(height: 8),
                       TextField(
                         controller: _noteController,
+                        textInputAction: TextInputAction.done,
                         decoration: const InputDecoration(
                           labelText: 'Catatan',
                           isDense: true,
@@ -2433,6 +2470,7 @@ class _HutangPribadiSectionState extends State<_HutangPribadiSection> {
                       Expanded(
                         child: TextField(
                           controller: _nameController,
+                          textInputAction: TextInputAction.next,
                           decoration: const InputDecoration(
                             labelText: 'Nama',
                             isDense: true,
@@ -2444,7 +2482,8 @@ class _HutangPribadiSectionState extends State<_HutangPribadiSection> {
                         child: TextField(
                           controller: _amountController,
                           keyboardType: TextInputType.number,
-                          inputFormatters: [RupiahInputFormatter()],
+                          textInputAction: TextInputAction.done,
+                          inputFormatters: [RupiahInputFormatter(allowDecimal: true)],
                           decoration: const InputDecoration(
                             labelText: 'Jumlah (Rp)',
                             isDense: true,
@@ -2483,7 +2522,7 @@ class _HutangPribadiSectionState extends State<_HutangPribadiSection> {
   void _save() async {
     final name = _nameController.text.trim();
     final amount =
-        int.tryParse(_amountController.text.replaceAll('.', '')) ?? 0;
+        int.tryParse(_amountController.text.split(',').first.replaceAll('.', '')) ?? 0;
     if (name.isNotEmpty && amount > 0) {
       await context.read<PersonalLedgerProvider>().addHutangPribadi(
         context.read<TabProvider>().selectedDate,
@@ -2525,7 +2564,7 @@ class _HutangPribadiSectionState extends State<_HutangPribadiSection> {
         ? controller.text.trim()
         : pl.name;
     final amount = field == 'amount'
-        ? int.tryParse(controller.text.replaceAll('.', '')) ?? 0
+        ? int.tryParse(controller.text.split(',').first.replaceAll('.', '')) ?? 0
         : pl.amount;
     final note = field == 'note'
         ? controller.text.trim()
@@ -2566,7 +2605,7 @@ class _HutangPribadiSectionState extends State<_HutangPribadiSection> {
               autofocus: true,
               keyboardType: isAmount ? TextInputType.number : TextInputType.text,
               inputFormatters:
-                  isAmount ? [RupiahInputFormatter()] : null,
+                  isAmount ? [RupiahInputFormatter(allowDecimal: true)] : null,
               textAlign: isAmount ? TextAlign.right : TextAlign.left,
               style: style ?? const TextStyle(fontSize: 11),
               decoration: const InputDecoration(
@@ -2702,7 +2741,7 @@ class _HutangPribadiSectionState extends State<_HutangPribadiSection> {
                     child: _editableCell(
                       pl,
                       'amount',
-                      rupiah(pl.amount),
+                      rupiahD(pl.amount),
                       plProv,
                       editValue: pl.amount.toString(),
                       bold: true,
@@ -2750,25 +2789,28 @@ class _SaldoDeductionSection extends StatefulWidget {
   final TextEditingController aController;
   final TextEditingController bController;
   final VoidCallback? onSaved;
+  final FocusNode? aFocusNode;
+  final FocusNode? bFocusNode;
   const _SaldoDeductionSection({
     required this.aController,
     required this.bController,
     this.onSaved,
+    this.aFocusNode,
+    this.bFocusNode,
   });
   @override
   State<_SaldoDeductionSection> createState() => _SaldoDeductionSectionState();
 }
 
 class _SaldoDeductionSectionState extends State<_SaldoDeductionSection> {
-  int get _result {
-    final a = int.tryParse(widget.aController.text.replaceAll('.', '')) ?? 0;
-    final b = int.tryParse(widget.bController.text.replaceAll('.', '')) ?? 0;
-    return a - b;
+  double get _result {
+    return parseNumInput(widget.aController.text) -
+        parseNumInput(widget.bController.text);
   }
 
   void _save() async {
-    final a = int.tryParse(widget.aController.text.replaceAll('.', '')) ?? 0;
-    final b = int.tryParse(widget.bController.text.replaceAll('.', '')) ?? 0;
+    final a = parseNumInput(widget.aController.text);
+    final b = parseNumInput(widget.bController.text);
     if (a > 0 || b > 0) {
       await context.read<SaldoDeductionProvider>().addSaldo(
         context.read<TabProvider>().selectedDate,
@@ -2786,16 +2828,20 @@ class _SaldoDeductionSectionState extends State<_SaldoDeductionSection> {
     final isMobile = AppTheme.isMobile(context);
     final fieldA = TextField(
       controller: widget.aController,
+      focusNode: widget.aFocusNode,
       keyboardType: TextInputType.number,
-      inputFormatters: [RupiahInputFormatter()],
+      textInputAction: TextInputAction.next,
+      inputFormatters: [RupiahInputFormatter(allowDecimal: true)],
       decoration: const InputDecoration(labelText: 'A', isDense: true),
       onChanged: (_) => setState(() {}),
       onSubmitted: (_) => _save(),
     );
     final fieldB = TextField(
       controller: widget.bController,
+      focusNode: widget.bFocusNode,
       keyboardType: TextInputType.number,
-      inputFormatters: [RupiahInputFormatter()],
+      textInputAction: TextInputAction.done,
+      inputFormatters: [RupiahInputFormatter(allowDecimal: true)],
       decoration: const InputDecoration(labelText: 'B', isDense: true),
       onChanged: (_) => setState(() {}),
       onSubmitted: (_) => _save(),
@@ -2815,7 +2861,7 @@ class _SaldoDeductionSectionState extends State<_SaldoDeductionSection> {
       ),
     );
     final result = Text(
-      rupiah(_result),
+      rupiahD(_result),
       style: const TextStyle(
         fontFamily: 'monospace',
         fontSize: 15,
@@ -2917,15 +2963,10 @@ class _RincianHarianSectionState extends State<_RincianHarianSection> {
     }
 
     final liveOil =
-        ((double.tryParse(widget.oilQtyController.text) ?? 0) *
-                (int.tryParse(
-                      widget.oilPriceController.text.replaceAll('.', ''),
-                    ) ??
-                    0))
-            .round();
-    final liveSaldo =
-        (int.tryParse(widget.saldoAController.text.replaceAll('.', '')) ?? 0) -
-        (int.tryParse(widget.saldoBController.text.replaceAll('.', '')) ?? 0);
+        parseNumInput(widget.oilQtyController.text) *
+                parseNumInput(widget.oilPriceController.text);
+    final liveSaldo = parseNumInput(widget.saldoAController.text) -
+        parseNumInput(widget.saldoBController.text);
     final daily = ringProv.daily;
     final dStockMgmt = daily != null ? (daily['stockMgmt'] as num).toInt() : 0;
     final dRemain = daily != null ? (daily['remain'] as num).toInt() : 0;
@@ -2939,21 +2980,21 @@ class _RincianHarianSectionState extends State<_RincianHarianSection> {
         padding: const EdgeInsets.all(16),
         child: Column(
           children: [
-            _dailyRow('Stok Minyak', rupiah(liveOil)),
-            _dailyRow('Stok Bahan', rupiah(dStockMgmt)),
-            _dailyRow('Sisa Barang', rupiah(dRemain)),
+            _dailyRow('Stok Minyak', rupiahD(liveOil)),
+            _dailyRow('Stok Bahan', rupiahD(dStockMgmt)),
+            _dailyRow('Sisa Barang', rupiahD(dRemain)),
             _dailyRow(
               'Hutang Pelanggan',
-              rupiah(dHutangPel),
+              rupiahD(dHutangPel),
               valueColor: dHutangPel > 0 ? AppTheme.debt : AppTheme.paid,
             ),
-            _dailyRow('Hutang Pribadi', rupiah(dHutangPri)),
-            _dailyRow('Pengurangan Saldo', rupiah(liveSaldo)),
+            _dailyRow('Hutang Pribadi', rupiahD(dHutangPri)),
+            _dailyRow('Pengurangan Saldo', rupiahD(liveSaldo)),
             const Divider(height: 24),
-            _dailyRow('Total Hari Ini', rupiah(totalHari), bold: true),
+            _dailyRow('Total Hari Ini', rupiahD(totalHari), bold: true),
             const Divider(height: 20),
-            _dailyRow('Saldo', rupiah(saldoHari)),
-            _dailyRow('TOTAL', rupiah(totalAkhir), bold: true),
+            _dailyRow('Saldo', rupiahD(saldoHari)),
+            _dailyRow('TOTAL', rupiahD(totalAkhir), bold: true),
           ],
         ),
       ),

@@ -83,7 +83,7 @@ class _RingkasanTabState extends State<RingkasanTab> {
                     ? AppTheme.debt
                     : AppTheme.paid,
               ),
-              _statBox('Pengurangan Saldo', rupiah(ringProv.totalSaldo)),
+              _statBox('Pengurangan Saldo', rupiahD(ringProv.totalSaldo)),
               _statBox(
                 'Total Transaksi',
                 '${ringProv.totalMonthlyTransactions}x',
@@ -160,7 +160,7 @@ class _RingkasanTabState extends State<RingkasanTab> {
                       ),
                       const Spacer(),
                       Text(
-                        rupiah(
+                        rupiahD(
                           ringProv.grand -
                               ringProv.totalHutangPri -
                               ringProv.totalSaldo,

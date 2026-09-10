@@ -12,7 +12,7 @@ class SaldoDeductionProvider extends ChangeNotifier {
   SaldoDeduction? get currentDateLog => _currentDateLog;
   bool get isCarryForward => _isCarryForward;
 
-  int get monthTotal => _monthLogs.fold<int>(0, (sum, s) => sum + s.result);
+  double get monthTotal => _monthLogs.fold<double>(0, (sum, s) => sum + s.result);
 
   Future<void> loadMonth(String activeMonth) async {
     final range = monthRange(activeMonth);
@@ -32,7 +32,7 @@ class SaldoDeductionProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> addSaldo(String date, int a, int b, String note) async {
+  Future<void> addSaldo(String date, double a, double b, String note) async {
     final existing = _currentDateLog;
     if (existing != null && existing.date == date && !_isCarryForward) {
       await DatabaseHelper.instance.updateSaldoDeduction(SaldoDeduction(

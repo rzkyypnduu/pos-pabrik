@@ -2,7 +2,7 @@ class OilStock {
   final int? id;
   final String? date;
   final double qty;
-  final int price;
+  final double price;
   final String? createdAt;
   final String? updatedAt;
 
@@ -33,7 +33,7 @@ class OilStock {
       id: map['id'] as int?,
       date: map['date'] as String?,
       qty: (map['qty'] as num?)?.toDouble() ?? 0,
-      price: (map['price'] as num?)?.toInt() ?? 0,
+      price: (map['price'] as num?)?.toDouble() ?? 0,
       createdAt: map['created_at'] as String?,
       updatedAt: map['updated_at'] as String?,
     );
