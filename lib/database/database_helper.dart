@@ -1,8 +1,10 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:path/path.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:uuid/uuid.dart';
 import '../models/product.dart';
 import '../models/sale.dart';
 import '../models/sale_item.dart';
@@ -109,13 +111,126 @@ class DatabaseHelper {
     }
     return await openDatabase(
       path,
-      version: 4,
+      version: 5,
       onCreate: _createDB,
       onUpgrade: _upgradeDB,
     );
   }
 
   String _now() => DateTime.now().toIso8601String();
+
+  static final Uuid _uuidGen = Uuid();
+  String newUuid() => _uuidGen.v4();
+
+  // ==================== SYNC INFRASTRUCTURE ====================
+
+  Future<void> _enqueueOutbox(
+    String table,
+    String operation,
+    Map<String, dynamic> row,
+    String rowUuid,
+  ) async {
+    final db = await database;
+    final payload = Map<String, dynamic>.from(row);
+    payload.remove('id');
+    payload['uuid'] = rowUuid;
+    await db.insert('outbox', {
+      'table_name': table,
+      'operation': operation,
+      'payload': jsonEncode(payload),
+      'created_at': _now(),
+    });
+  }
+
+  Future<String?> _uuidOf(String table, int id) async {
+    final db = await database;
+    final rows = await db.query(
+      table,
+      columns: ['uuid'],
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : rows.first['uuid'] as String?;
+  }
+
+  Future<void> _enqueueDeleteById(String table, int id) async {
+    final u = await _uuidOf(table, id);
+    if (u == null) return;
+    await _enqueueOutbox(table, 'delete', {}, u);
+  }
+
+  Future<void> _enqueueRow(String table, String operation, int id) async {
+    final db = await database;
+    final rows = await db.query(table, where: 'id = ?', whereArgs: [id]);
+    if (rows.isEmpty) return;
+    final uuid = rows.first['uuid'] as String?;
+    if (uuid == null) return;
+    await _enqueueOutbox(table, operation, rows.first, uuid);
+  }
+
+  Future<void> _enqueueBulkDelete(
+    String table,
+    String? where,
+    List<Object?>? whereArgs,
+  ) async {
+    final db = await database;
+    final rows = await db.query(
+      table,
+      columns: ['uuid'],
+      where: where,
+      whereArgs: whereArgs,
+    );
+    for (final r in rows) {
+      final u = r['uuid'] as String?;
+      if (u != null) await _enqueueOutbox(table, 'delete', {}, u);
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> getPendingOutbox() async {
+    final db = await database;
+    return await db.query(
+      'outbox',
+      where: 'synced_at IS NULL',
+      orderBy: 'id ASC',
+    );
+  }
+
+  Future<void> setOutboxSynced(int id) async {
+    final db = await database;
+    await db.update(
+      'outbox',
+      {'synced_at': _now()},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<void> deleteOutboxEntry(int id) async {
+    final db = await database;
+    await db.delete('outbox', where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<String?> getSyncMeta(String key) async {
+    final db = await database;
+    final rows = await db.query(
+      'sync_meta',
+      columns: ['value'],
+      where: 'key = ?',
+      whereArgs: [key],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : rows.first['value'] as String?;
+  }
+
+  Future<void> setSyncMeta(String key, String value) async {
+    final db = await database;
+    await db.insert(
+      'sync_meta',
+      {'key': key, 'value': value},
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
 
   Future<void> _upgradeDB(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
@@ -156,48 +271,101 @@ class DatabaseHelper {
         await db.execute('DROP TABLE oil_stocks_old');
       }
     }
+    if (oldVersion < 5) {
+      const syncTables = [
+        'products',
+        'sales',
+        'sale_items',
+        'oil_stocks',
+        'stock_managements',
+        'stock_remainings',
+        'customer_ledgers',
+        'personal_ledgers',
+        'saldo_deductions',
+        'expenses',
+      ];
+      for (final table in syncTables) {
+        final cols = await db.rawQuery('PRAGMA table_info($table)');
+        final names = cols.map((c) => c['name']).toSet();
+        if (!names.contains('uuid')) {
+          await db.execute('ALTER TABLE $table ADD COLUMN uuid TEXT');
+        }
+        if (!names.contains('deleted_at')) {
+          await db.execute('ALTER TABLE $table ADD COLUMN deleted_at TEXT');
+        }
+        final missing = await db.query(
+          table,
+          columns: ['id'],
+          where: 'uuid IS NULL',
+        );
+        for (final row in missing) {
+          await db.update(
+            table,
+            {'uuid': _uuidGen.v4()},
+            where: 'id = ?',
+            whereArgs: [row['id']],
+          );
+        }
+      }
+      await _createSyncTables(db);
+    }
+  }
+
+  Future<void> _createSyncTables(Database db) async {
+    await db.execute(
+      '''CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY AUTOINCREMENT, table_name TEXT NOT NULL, operation TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT, synced_at TEXT)''',
+    );
+    await db.execute(
+      '''CREATE TABLE IF NOT EXISTS sync_meta (key TEXT PRIMARY KEY, value TEXT)''',
+    );
   }
 
   Future<void> _createDB(Database db, int version) async {
     await db.execute(
-      '''CREATE TABLE products (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, price INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT)''',
+      '''CREATE TABLE products (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, price INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT, uuid TEXT, deleted_at TEXT)''',
     );
     await db.execute(
-      '''CREATE TABLE sales (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, name TEXT NOT NULL, raw_total INTEGER DEFAULT 0, rounded_total INTEGER DEFAULT 0, paid INTEGER DEFAULT 0, diff INTEGER DEFAULT 0, note TEXT, is_paid_btn_clicked INTEGER DEFAULT 0, debt_paid INTEGER DEFAULT 0, debt_paid_amount INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT)''',
+      '''CREATE TABLE sales (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, name TEXT NOT NULL, raw_total INTEGER DEFAULT 0, rounded_total INTEGER DEFAULT 0, paid INTEGER DEFAULT 0, diff INTEGER DEFAULT 0, note TEXT, is_paid_btn_clicked INTEGER DEFAULT 0, debt_paid INTEGER DEFAULT 0, debt_paid_amount INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT, uuid TEXT, deleted_at TEXT)''',
     );
     await db.execute(
-      '''CREATE TABLE sale_items (id INTEGER PRIMARY KEY AUTOINCREMENT, sale_id INTEGER NOT NULL, product_id INTEGER, name TEXT NOT NULL, qty REAL DEFAULT 0, price INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT, FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE)''',
+      '''CREATE TABLE sale_items (id INTEGER PRIMARY KEY AUTOINCREMENT, sale_id INTEGER NOT NULL, product_id INTEGER, name TEXT NOT NULL, qty REAL DEFAULT 0, price INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT, uuid TEXT, deleted_at TEXT, FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE)''',
     );
     await db.execute(
-      '''CREATE TABLE oil_stocks (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, qty REAL DEFAULT 0, price INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT)''',
+      '''CREATE TABLE oil_stocks (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, qty REAL DEFAULT 0, price REAL DEFAULT 0, created_at TEXT, updated_at TEXT, uuid TEXT, deleted_at TEXT)''',
     );
     await db.execute(
-      '''CREATE TABLE stock_managements (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, name TEXT NOT NULL, qty REAL DEFAULT 0, price INTEGER DEFAULT 0, batches TEXT, created_at TEXT, updated_at TEXT)''',
+      '''CREATE TABLE stock_managements (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, name TEXT NOT NULL, qty REAL DEFAULT 0, price INTEGER DEFAULT 0, batches TEXT, created_at TEXT, updated_at TEXT, uuid TEXT, deleted_at TEXT)''',
     );
     await db.execute(
-      '''CREATE TABLE stock_remainings (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, name TEXT NOT NULL, qty REAL DEFAULT 0, price INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT)''',
+      '''CREATE TABLE stock_remainings (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, name TEXT NOT NULL, qty REAL DEFAULT 0, price INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT, uuid TEXT, deleted_at TEXT)''',
     );
     await db.execute(
-      '''CREATE TABLE customer_ledgers (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, name TEXT NOT NULL, amount INTEGER DEFAULT 0, type TEXT NOT NULL, note TEXT, sale_id INTEGER, created_at TEXT, updated_at TEXT, FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE)''',
+      '''CREATE TABLE customer_ledgers (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, name TEXT NOT NULL, amount INTEGER DEFAULT 0, type TEXT NOT NULL, note TEXT, sale_id INTEGER, created_at TEXT, updated_at TEXT, uuid TEXT, deleted_at TEXT, FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE)''',
     );
     await db.execute(
-      '''CREATE TABLE personal_ledgers (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, name TEXT NOT NULL, amount INTEGER DEFAULT 0, note TEXT, created_at TEXT, updated_at TEXT)''',
+      '''CREATE TABLE personal_ledgers (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, name TEXT NOT NULL, amount INTEGER DEFAULT 0, note TEXT, created_at TEXT, updated_at TEXT, uuid TEXT, deleted_at TEXT)''',
     );
     await db.execute(
-      '''CREATE TABLE saldo_deductions (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, a INTEGER DEFAULT 0, b INTEGER DEFAULT 0, note TEXT, created_at TEXT, updated_at TEXT)''',
+      '''CREATE TABLE saldo_deductions (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, a INTEGER DEFAULT 0, b INTEGER DEFAULT 0, note TEXT, created_at TEXT, updated_at TEXT, uuid TEXT, deleted_at TEXT)''',
     );
     await db.execute(
-      '''CREATE TABLE expenses (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, amount INTEGER DEFAULT 0, note TEXT, created_at TEXT, updated_at TEXT)''',
+      '''CREATE TABLE expenses (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, amount INTEGER DEFAULT 0, note TEXT, created_at TEXT, updated_at TEXT, uuid TEXT, deleted_at TEXT)''',
     );
+    await _createSyncTables(db);
   }
 
   // ==================== PRODUCTS ====================
   Future<int> insertProduct(Product product) async {
     final db = await database;
     final data = product.toMap();
+    data.remove('id');
+    final uuid = newUuid();
+    data['uuid'] = uuid;
     data['created_at'] = _now();
     data['updated_at'] = _now();
-    return await db.insert('products', data);
+    final id = await db.insert('products', data);
+    await _enqueueOutbox('products', 'insert', data, uuid);
+    return id;
   }
 
   Future<List<Product>> getProducts() async {
@@ -210,16 +378,22 @@ class DatabaseHelper {
     final db = await database;
     final data = product.toMap();
     data['updated_at'] = _now();
-    return await db.update(
+    final id = await db.update(
       'products',
       data,
       where: 'id = ?',
       whereArgs: [product.id],
     );
+    final uuid = await _uuidOf('products', product.id ?? -1);
+    if (uuid != null) {
+      await _enqueueOutbox('products', 'update', data, uuid);
+    }
+    return id;
   }
 
   Future<int> deleteProduct(int id) async {
     final db = await database;
+    await _enqueueDeleteById('products', id);
     return await db.delete('products', where: 'id = ?', whereArgs: [id]);
   }
 
@@ -228,9 +402,13 @@ class DatabaseHelper {
     final db = await database;
     final data = sale.toMap();
     data.remove('id');
+    final uuid = newUuid();
+    data['uuid'] = uuid;
     data['created_at'] = _now();
     data['updated_at'] = _now();
-    return await db.insert('sales', data);
+    final id = await db.insert('sales', data);
+    await _enqueueOutbox('sales', 'insert', data, uuid);
+    return id;
   }
 
   Future<List<Sale>> getSalesByDate(String date) async {
@@ -267,12 +445,14 @@ class DatabaseHelper {
     final db = await database;
     final data = sale.toMap();
     data['updated_at'] = _now();
-    return await db.update(
+    final id = await db.update(
       'sales',
       data,
       where: 'id = ?',
       whereArgs: [sale.id],
     );
+    if (sale.id != null) await _enqueueRow('sales', 'update', sale.id!);
+    return id;
   }
 
   Future<void> setSaleDebtPaid(int saleId, bool value) async {
@@ -283,6 +463,7 @@ class DatabaseHelper {
       where: 'id = ?',
       whereArgs: [saleId],
     );
+    await _enqueueRow('sales', 'update', saleId);
   }
 
   Future<Sale?> getPreviousUnpaidSale(String name, String beforeDate) async {
@@ -299,6 +480,25 @@ class DatabaseHelper {
 
   Future<void> deleteSale(int id) async {
     final db = await database;
+    final items = await db.query(
+      'sale_items',
+      columns: ['id'],
+      where: 'sale_id = ?',
+      whereArgs: [id],
+    );
+    for (final item in items) {
+      await _enqueueDeleteById('sale_items', item['id'] as int);
+    }
+    final ledgers = await db.query(
+      'customer_ledgers',
+      columns: ['id'],
+      where: 'sale_id = ?',
+      whereArgs: [id],
+    );
+    for (final ledger in ledgers) {
+      await _enqueueDeleteById('customer_ledgers', ledger['id'] as int);
+    }
+    await _enqueueDeleteById('sales', id);
     await db.delete('sale_items', where: 'sale_id = ?', whereArgs: [id]);
     await db.delete('customer_ledgers', where: 'sale_id = ?', whereArgs: [id]);
     await db.delete('sales', where: 'id = ?', whereArgs: [id]);
@@ -309,9 +509,27 @@ class DatabaseHelper {
     final db = await database;
     final data = item.toMap();
     data.remove('id');
+    final uuid = newUuid();
+    data['uuid'] = uuid;
     data['created_at'] = _now();
     data['updated_at'] = _now();
-    return await db.insert('sale_items', data);
+    final id = await db.insert('sale_items', data);
+    await _enqueueOutbox('sale_items', 'insert', data, uuid);
+    return id;
+  }
+
+  Future<void> deleteSaleItemsBySaleId(int saleId) async {
+    final db = await database;
+    final items = await db.query(
+      'sale_items',
+      columns: ['id'],
+      where: 'sale_id = ?',
+      whereArgs: [saleId],
+    );
+    for (final item in items) {
+      await _enqueueDeleteById('sale_items', item['id'] as int);
+    }
+    await db.delete('sale_items', where: 'sale_id = ?', whereArgs: [saleId]);
   }
 
   Future<List<SaleItem>> getSaleItemsBySaleId(int saleId) async {
@@ -415,21 +633,27 @@ class DatabaseHelper {
     final db = await database;
     final data = oil.toMap();
     data.remove('id');
+    final uuid = newUuid();
+    data['uuid'] = uuid;
     data['created_at'] = _now();
     data['updated_at'] = _now();
-    return await db.insert('oil_stocks', data);
+    final id = await db.insert('oil_stocks', data);
+    await _enqueueOutbox('oil_stocks', 'insert', data, uuid);
+    return id;
   }
 
   Future<int> updateOilStock(OilStock oil) async {
     final db = await database;
     final data = oil.toMap();
     data['updated_at'] = _now();
-    return await db.update(
+    final id = await db.update(
       'oil_stocks',
       data,
       where: 'id = ?',
       whereArgs: [oil.id],
     );
+    if (oil.id != null) await _enqueueRow('oil_stocks', 'update', oil.id!);
+    return id;
   }
 
   Future<List<OilStock>> getOilStocksByMonth(
@@ -472,6 +696,7 @@ class DatabaseHelper {
 
   Future<int> deleteOilStock(int id) async {
     final db = await database;
+    await _enqueueDeleteById('oil_stocks', id);
     return await db.delete('oil_stocks', where: 'id = ?', whereArgs: [id]);
   }
 
@@ -480,21 +705,29 @@ class DatabaseHelper {
     final db = await database;
     final data = sm.toMap();
     data.remove('id');
+    final uuid = newUuid();
+    data['uuid'] = uuid;
     data['created_at'] = _now();
     data['updated_at'] = _now();
-    return await db.insert('stock_managements', data);
+    final id = await db.insert('stock_managements', data);
+    await _enqueueOutbox('stock_managements', 'insert', data, uuid);
+    return id;
   }
 
   Future<int> updateStockManagement(StockManagement sm) async {
     final db = await database;
     final data = sm.toMap();
     data['updated_at'] = _now();
-    return await db.update(
+    final id = await db.update(
       'stock_managements',
       data,
       where: 'id = ?',
       whereArgs: [sm.id],
     );
+    if (sm.id != null) {
+      await _enqueueRow('stock_managements', 'update', sm.id!);
+    }
+    return id;
   }
 
   Future<List<StockManagement>> getStockManagementsByMonth(
@@ -537,6 +770,7 @@ class DatabaseHelper {
 
   Future<int> deleteStockManagement(int id) async {
     final db = await database;
+    await _enqueueDeleteById('stock_managements', id);
     return await db.delete(
       'stock_managements',
       where: 'id = ?',
@@ -549,9 +783,13 @@ class DatabaseHelper {
     final db = await database;
     final data = sr.toMap();
     data.remove('id');
+    final uuid = newUuid();
+    data['uuid'] = uuid;
     data['created_at'] = _now();
     data['updated_at'] = _now();
-    return await db.insert('stock_remainings', data);
+    final id = await db.insert('stock_remainings', data);
+    await _enqueueOutbox('stock_remainings', 'insert', data, uuid);
+    return id;
   }
 
   Future<List<StockRemaining>> getStockRemainingsByMonth(
@@ -594,6 +832,7 @@ class DatabaseHelper {
 
   Future<int> deleteStockRemaining(int id) async {
     final db = await database;
+    await _enqueueDeleteById('stock_remainings', id);
     return await db.delete(
       'stock_remainings',
       where: 'id = ?',
@@ -605,12 +844,14 @@ class DatabaseHelper {
     final db = await database;
     final data = sr.toMap();
     data['updated_at'] = _now();
-    return await db.update(
+    final id = await db.update(
       'stock_remainings',
       data,
       where: 'id = ?',
       whereArgs: [sr.id],
     );
+    if (sr.id != null) await _enqueueRow('stock_remainings', 'update', sr.id!);
+    return id;
   }
 
   // ==================== CUSTOMER LEDGERS ====================
@@ -618,9 +859,13 @@ class DatabaseHelper {
     final db = await database;
     final data = ledger.toMap();
     data.remove('id');
+    final uuid = newUuid();
+    data['uuid'] = uuid;
     data['created_at'] = _now();
     data['updated_at'] = _now();
-    return await db.insert('customer_ledgers', data);
+    final id = await db.insert('customer_ledgers', data);
+    await _enqueueOutbox('customer_ledgers', 'insert', data, uuid);
+    return id;
   }
 
   Future<List<CustomerLedger>> getAllCustomerLedgers() async {
@@ -672,16 +917,21 @@ class DatabaseHelper {
     final db = await database;
     final data = ledger.toMap();
     data['updated_at'] = _now();
-    return await db.update(
+    final id = await db.update(
       'customer_ledgers',
       data,
       where: 'id = ?',
       whereArgs: [ledger.id],
     );
+    if (ledger.id != null) {
+      await _enqueueRow('customer_ledgers', 'update', ledger.id!);
+    }
+    return id;
   }
 
   Future<int> deleteCustomerLedger(int id) async {
     final db = await database;
+    await _enqueueDeleteById('customer_ledgers', id);
     return await db.delete(
       'customer_ledgers',
       where: 'id = ?',
@@ -691,6 +941,7 @@ class DatabaseHelper {
 
   Future<void> deleteCustomerLedgerByName(String name) async {
     final db = await database;
+    await _enqueueBulkDelete('customer_ledgers', 'name = ?', [name]);
     await db.delete('customer_ledgers', where: 'name = ?', whereArgs: [name]);
   }
 
@@ -699,9 +950,13 @@ class DatabaseHelper {
     final db = await database;
     final data = ledger.toMap();
     data.remove('id');
+    final uuid = newUuid();
+    data['uuid'] = uuid;
     data['created_at'] = _now();
     data['updated_at'] = _now();
-    return await db.insert('personal_ledgers', data);
+    final id = await db.insert('personal_ledgers', data);
+    await _enqueueOutbox('personal_ledgers', 'insert', data, uuid);
+    return id;
   }
 
   Future<List<PersonalLedger>> getPersonalLedgersByMonth(
@@ -744,6 +999,7 @@ class DatabaseHelper {
 
   Future<int> deletePersonalLedger(int id) async {
     final db = await database;
+    await _enqueueDeleteById('personal_ledgers', id);
     return await db.delete(
       'personal_ledgers',
       where: 'id = ?',
@@ -758,12 +1014,16 @@ class DatabaseHelper {
     data.remove('date');
     data.remove('created_at');
     data['updated_at'] = _now();
-    return await db.update(
+    final id = await db.update(
       'personal_ledgers',
       data,
       where: 'id = ?',
       whereArgs: [ledger.id],
     );
+    if (ledger.id != null) {
+      await _enqueueRow('personal_ledgers', 'update', ledger.id!);
+    }
+    return id;
   }
 
   // ==================== SALDO DEDUCTIONS ====================
@@ -771,21 +1031,29 @@ class DatabaseHelper {
     final db = await database;
     final data = saldo.toMap();
     data.remove('id');
+    final uuid = newUuid();
+    data['uuid'] = uuid;
     data['created_at'] = _now();
     data['updated_at'] = _now();
-    return await db.insert('saldo_deductions', data);
+    final id = await db.insert('saldo_deductions', data);
+    await _enqueueOutbox('saldo_deductions', 'insert', data, uuid);
+    return id;
   }
 
   Future<int> updateSaldoDeduction(SaldoDeduction saldo) async {
     final db = await database;
     final data = saldo.toMap();
     data['updated_at'] = _now();
-    return await db.update(
+    final id = await db.update(
       'saldo_deductions',
       data,
       where: 'id = ?',
       whereArgs: [saldo.id],
     );
+    if (saldo.id != null) {
+      await _enqueueRow('saldo_deductions', 'update', saldo.id!);
+    }
+    return id;
   }
 
   Future<List<SaldoDeduction>> getSaldoDeductionsByMonth(
@@ -828,6 +1096,7 @@ class DatabaseHelper {
 
   Future<int> deleteSaldoDeduction(int id) async {
     final db = await database;
+    await _enqueueDeleteById('saldo_deductions', id);
     return await db.delete(
       'saldo_deductions',
       where: 'id = ?',
@@ -840,9 +1109,13 @@ class DatabaseHelper {
     final db = await database;
     final data = expense.toMap();
     data.remove('id');
+    final uuid = newUuid();
+    data['uuid'] = uuid;
     data['created_at'] = _now();
     data['updated_at'] = _now();
-    return await db.insert('expenses', data);
+    final id = await db.insert('expenses', data);
+    await _enqueueOutbox('expenses', 'insert', data, uuid);
+    return id;
   }
 
   Future<List<Expense>> getExpensesByDate(String date) async {
@@ -872,6 +1145,7 @@ class DatabaseHelper {
 
   Future<int> deleteExpense(int id) async {
     final db = await database;
+    await _enqueueDeleteById('expenses', id);
     return await db.delete('expenses', where: 'id = ?', whereArgs: [id]);
   }
 
@@ -909,6 +1183,34 @@ class DatabaseHelper {
   // ==================== RESET ====================
   Future<void> resetMonth(String startDate, String endDate) async {
     final db = await database;
+    await _enqueueBulkDelete('sales', 'date BETWEEN ? AND ?', [
+      startDate,
+      endDate,
+    ]);
+    await _enqueueBulkDelete('expenses', 'date BETWEEN ? AND ?', [
+      startDate,
+      endDate,
+    ]);
+    await _enqueueBulkDelete('oil_stocks', 'date BETWEEN ? AND ?', [
+      startDate,
+      endDate,
+    ]);
+    await _enqueueBulkDelete('stock_managements', 'date BETWEEN ? AND ?', [
+      startDate,
+      endDate,
+    ]);
+    await _enqueueBulkDelete('stock_remainings', 'date BETWEEN ? AND ?', [
+      startDate,
+      endDate,
+    ]);
+    await _enqueueBulkDelete('personal_ledgers', 'date BETWEEN ? AND ?', [
+      startDate,
+      endDate,
+    ]);
+    await _enqueueBulkDelete('saldo_deductions', 'date BETWEEN ? AND ?', [
+      startDate,
+      endDate,
+    ]);
     await db.delete(
       'sales',
       where: 'date BETWEEN ? AND ?',
@@ -948,6 +1250,16 @@ class DatabaseHelper {
 
   Future<void> resetAll() async {
     final db = await database;
+    await _enqueueBulkDelete('sale_items', null, null);
+    await _enqueueBulkDelete('sales', null, null);
+    await _enqueueBulkDelete('customer_ledgers', null, null);
+    await _enqueueBulkDelete('personal_ledgers', null, null);
+    await _enqueueBulkDelete('oil_stocks', null, null);
+    await _enqueueBulkDelete('stock_managements', null, null);
+    await _enqueueBulkDelete('stock_remainings', null, null);
+    await _enqueueBulkDelete('products', null, null);
+    await _enqueueBulkDelete('saldo_deductions', null, null);
+    await _enqueueBulkDelete('expenses', null, null);
     await db.delete('sale_items');
     await db.delete('sales');
     await db.delete('customer_ledgers');
@@ -962,6 +1274,8 @@ class DatabaseHelper {
 
   Future<void> clearOilAndSaldo() async {
     final db = await database;
+    await _enqueueBulkDelete('oil_stocks', null, null);
+    await _enqueueBulkDelete('saldo_deductions', null, null);
     await db.delete('oil_stocks');
     await db.delete('saldo_deductions');
   }

@@ -176,13 +176,7 @@ class TransactionProvider extends ChangeNotifier {
         debtPaidAmount: 0,
       );
       await DatabaseHelper.instance.updateSale(sale);
-
-      final db = await DatabaseHelper.instance.database;
-      await db.delete(
-        'sale_items',
-        where: 'sale_id = ?',
-        whereArgs: [_editingSaleId],
-      );
+      await DatabaseHelper.instance.deleteSaleItemsBySaleId(_editingSaleId!);
 
       for (final item in items) {
         final product = item['product'] as Product;
