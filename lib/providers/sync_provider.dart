@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -99,13 +100,20 @@ class SyncProvider extends ChangeNotifier {
     }
   }
 
-  Future<bool> testConnection() async {
+  Future<bool> testConnection({String? url, String? anonKey}) async {
+    final u = url ?? _url;
+    final k = anonKey ?? _anonKey;
+    if (u == null || u.isEmpty || k == null || k.isEmpty) {
+      _lastError = 'Project URL / Anon Key kosong';
+      notifyListeners();
+      return false;
+    }
     try {
-      final c = _clientFor(_url ?? '', _anonKey ?? '');
+      final c = _clientFor(u.replaceAll(RegExp(r'\/+$'), ''), k);
       await c.from('sync_meta').select('device_id').limit(1);
       return true;
     } catch (e) {
-      _lastError = kDebugMode ? '$e' : 'Gagal terhubung ke Supabase';
+      _lastError = '$e';
       notifyListeners();
       return false;
     }
@@ -168,57 +176,90 @@ class SyncProvider extends ChangeNotifier {
     }
   }
 
+  static const _netTimeout = Duration(seconds: 15);
+
   Future<void> push() async {
     if (_busy || _client == null) return;
     _busy = true;
     try {
       final pending = await _db.getPendingOutbox();
       if (pending.isNotEmpty) {
+        final groups = <String, Map<String, List<Map<String, dynamic>>>>{};
         for (final entry in pending) {
-          final ok = await _pushEntry(entry);
-          if (ok) {
-            await _db.deleteOutboxEntry(entry['id'] as int);
+          final eid = entry['id'] as int;
+          final table = entry['table_name'] as String;
+          final op = entry['operation'] as String;
+          final payload =
+              jsonDecode(entry['payload'] as String? ?? '{}')
+                  as Map<String, dynamic>;
+          if (payload['id'] == null) {
+            await _db.deleteOutboxEntry(eid);
+            continue;
+          }
+          final g = groups.putIfAbsent(
+            table,
+            () => {'upsert': <Map<String, dynamic>>[], 'delete': <Map<String, dynamic>>[]},
+          );
+          final map = Map<String, dynamic>.from(payload);
+          map['_eid'] = eid;
+          g[op]!.add(map);
+        }
+        // Parent dulu (products/sales/expenses) sebelum child.
+        for (final table in businessTables) {
+          final g = groups.remove(table);
+          if (g == null) continue;
+          final upserts = g['upsert']!;
+          for (var i = 0; i < upserts.length; i += 500) {
+            final batch = upserts.sublist(
+              i,
+              math.min(i + 500, upserts.length),
+            );
+            final body = batch.map((r) {
+              final m = Map<String, dynamic>.from(r);
+              m.remove('_eid');
+              m['updated_by'] = _deviceId;
+              return m;
+            }).toList();
+            try {
+              await _client!.from(table).upsert(body).timeout(_netTimeout);
+              for (final r in batch) {
+                await _db.deleteOutboxEntry(r['_eid'] as int);
+              }
+            } catch (e) {
+              _lastError = '$e';
+            }
+          }
+          final deletes = g['delete']!;
+          for (var i = 0; i < deletes.length; i += 200) {
+            final batch = deletes.sublist(
+              i,
+              math.min(i + 200, deletes.length),
+            );
+            final ids =
+                batch.map((r) => r['id'].toString()).toList();
+            try {
+              await _client!
+                  .from(table)
+                  .update({
+                    'deleted_at': DateTime.now().toUtc().toIso8601String(),
+                  })
+                  .inFilter('id', ids)
+                  .timeout(_netTimeout);
+              for (final r in batch) {
+                await _db.deleteOutboxEntry(r['_eid'] as int);
+              }
+            } catch (e) {
+              _lastError = '$e';
+            }
           }
         }
       }
       await _refreshPendingCount();
+      _lastSyncedAt = DateTime.now();
     } catch (e) {
       _lastError = kDebugMode ? '$e' : 'Gagal mengunggah data';
     } finally {
       _busy = false;
-    }
-  }
-
-  Future<bool> _pushEntry(Map<String, dynamic> entry) async {
-    final client = _client;
-    if (client == null) return false;
-    final table = entry['table_name'] as String;
-    final op = entry['operation'] as String;
-    final payload = entry['payload'] as String? ?? '{}';
-    final decoded = jsonDecode(payload) as Map<String, dynamic>;
-    if (decoded['id'] == null) return false;
-
-    try {
-      if (op == 'delete') {
-        // Tombstone: tandai deleted_at, jangan hapus fisik agar device lain
-        // tetap bisa pull tahu baris ini terhapus.
-        final tombstone = {
-          ...decoded,
-          'deleted_at': DateTime.now().toUtc().toIso8601String(),
-        };
-        await client.from(table).upsert(tombstone);
-      } else {
-        final body = {
-          ...decoded,
-          'updated_by': _deviceId,
-        };
-        await client.from(table).upsert(body);
-      }
-      _lastSyncedAt = DateTime.now();
-      return true;
-    } catch (e) {
-      _lastError = kDebugMode ? '$e' : 'Gagal sinkron $table';
-      return false;
     }
   }
 
@@ -246,7 +287,8 @@ class SyncProvider extends ChangeNotifier {
             .select('*')
             .gt('updated_at', cursor)
             .order('updated_at')
-            .limit(500);
+            .limit(500)
+            .timeout(_netTimeout);
         final rows = (res as List?) ?? [];
         if (rows.isEmpty) {
           keepGoing = false;
