@@ -57,6 +57,17 @@ class DatabaseHelper {
     return destPath;
   }
 
+  Future<Uint8List> exportDatabaseBytes() async {
+    await closeDatabase();
+    final src = await getDatabaseFilePath();
+    if (!File(src).existsSync()) {
+      throw Exception('Database belum ditemukan');
+    }
+    final bytes = await File(src).readAsBytes();
+    await database;
+    return bytes;
+  }
+
   Future<void> shutdownExport(String destPath) async {
     await closeDatabase();
     final src = await getDatabaseFilePath();

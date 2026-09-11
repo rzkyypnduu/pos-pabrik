@@ -1,8 +1,10 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
 import '../constants/app_theme.dart';
+import '../providers/printer_provider.dart';
 
 class AppSidebar extends StatefulWidget {
   final int currentTab;
@@ -22,21 +24,41 @@ class _AppSidebarState extends State<AppSidebar> {
   bool _isHovered = false;
 
   Widget _buildLogoContent() {
+    final prov = context.watch<PrinterProvider>();
+    final hasLogo = prov.logoPath.isNotEmpty && File(prov.logoPath).existsSync();
+    final Widget logo = hasLogo
+        ? ClipRect(
+            child: SizedBox(
+              width: 24,
+              height: 24,
+              child: Image.file(
+                File(prov.logoPath),
+                fit: BoxFit.contain,
+              ),
+            ),
+          )
+        : const Icon(Icons.store, color: AppTheme.sidebarActive, size: 24);
     final content = _isHovered
-        ? const Row(
+        ? Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(Icons.store, color: AppTheme.sidebarActive, size: 24),
-              SizedBox(width: 10),
-              Text(
-                'POS Krupuk',
-                style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.w700),
+              logo,
+              const SizedBox(width: 10),
+              Flexible(
+                child: Text(
+                  prov.storeName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
               ),
             ],
           )
-        : const Center(
-            child: Icon(Icons.store, color: AppTheme.sidebarActive, size: 24),
-          );
+        : Center(child: logo);
     if (Platform.isWindows) {
       return DragToMoveArea(child: content);
     }

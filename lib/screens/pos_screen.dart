@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../constants/app_theme.dart';
@@ -28,9 +30,31 @@ class PosScreen extends StatefulWidget {
 }
 
 class _PosScreenState extends State<PosScreen> {
+  final _zoomController = TransformationController();
+  bool _isClampingZoom = false;
+
+  void _onZoomChanged() {
+    if (_isClampingZoom || !mounted) return;
+    final m = _zoomController.value.clone();
+    final s = m.getMaxScaleOnAxis();
+    if (s > 1.0) {
+      final vw = MediaQuery.sizeOf(context).width;
+      final minTx = vw * (1 - s);
+      final tx = m.entry(0, 3);
+      final clamped = tx.clamp(minTx, 0.0);
+      if (clamped != tx) {
+        _isClampingZoom = true;
+        m.setEntry(0, 3, clamped);
+        _zoomController.value = m;
+        _isClampingZoom = false;
+      }
+    }
+  }
+
   @override
   void initState() {
     super.initState();
+    _zoomController.addListener(_onZoomChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       context.read<ProductProvider>().loadProducts();
       context.read<CustomerLedgerProvider>().loadAll();
@@ -40,6 +64,26 @@ class _PosScreenState extends State<PosScreen> {
       await backupProv.loadSavedSettings();
       await backupProv.runBackupIfDue();
     });
+  }
+
+  @override
+  void dispose() {
+    _zoomController.dispose();
+    super.dispose();
+  }
+
+  void _zoomIn() {
+    _setZoom(_zoomController.value.getMaxScaleOnAxis() * 1.25);
+  }
+
+  void _zoomOut() {
+    _setZoom(_zoomController.value.getMaxScaleOnAxis() / 1.25);
+  }
+
+  void _setZoom(double target) {
+    final newScale = target.clamp(1.0, 3.0);
+    _zoomController.value =
+        Matrix4.diagonal3Values(newScale, newScale, newScale);
   }
 
   @override
@@ -70,8 +114,20 @@ class _PosScreenState extends State<PosScreen> {
             child: Column(
               children: [
                 if (!isCompact) const WindowControls(),
-                if (isCompact) _mobileHeader(tabProv),
-                Expanded(child: tabs[tabProv.currentTab]),
+                if (isCompact) _mobileHeader(),
+                Expanded(
+                  child: AppTheme.isMobile(context)
+                      ? InteractiveViewer(
+                          transformationController: _zoomController,
+                          minScale: 1.0,
+                          maxScale: 3.0,
+                          scaleFactor: 0.5,
+                          boundaryMargin: EdgeInsets.zero,
+                          interactionEndFrictionCoefficient: 0.5,
+                          child: tabs[tabProv.currentTab],
+                        )
+                      : tabs[tabProv.currentTab],
+                ),
               ],
             ),
           ),
@@ -121,7 +177,9 @@ class _PosScreenState extends State<PosScreen> {
     }
   }
 
-  Widget _mobileHeader(TabProvider tabProv) {
+  Widget _mobileHeader() {
+    final prov = context.watch<PrinterProvider>();
+    final hasLogo = prov.logoPath.isNotEmpty && File(prov.logoPath).existsSync();
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: const BoxDecoration(color: AppTheme.sidebarBg),
@@ -129,23 +187,61 @@ class _PosScreenState extends State<PosScreen> {
         bottom: false,
         child: Row(
           children: [
-            const Icon(Icons.store, color: AppTheme.sidebarActive, size: 24),
+            if (hasLogo)
+              ClipRect(
+                child: SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: Image.file(
+                    File(prov.logoPath),
+                    fit: BoxFit.contain,
+                  ),
+                ),
+              )
+            else
+              const Icon(Icons.store, color: AppTheme.sidebarActive, size: 24),
             const SizedBox(width: 8),
-            const Text(
-              'POS Krupuk',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 16,
-                fontWeight: FontWeight.w700,
+            Flexible(
+              child: Text(
+                prov.storeName,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                ),
               ),
             ),
             const Spacer(),
-            if (AppTheme.isMobile(context))
-              IconButton(
-                icon: const Icon(Icons.refresh, color: Colors.white, size: 20),
-                onPressed: () => _reloadTabData(tabProv.currentTab),
-              ),
+            if (AppTheme.isMobile(context)) ...[
+              _buildZoomButton(Icons.zoom_out, _zoomOut),
+              const SizedBox(width: 6),
+              _buildZoomButton(Icons.zoom_in, _zoomIn),
+              const SizedBox(width: 6),
+              _buildZoomButton(Icons.center_focus_strong, _resetZoom),
+            ],
           ],
+        ),
+      ),
+    );
+  }
+
+  void _resetZoom() {
+    _zoomController.value = Matrix4.identity();
+    setState(() {});
+  }
+
+  Widget _buildZoomButton(IconData icon, VoidCallback onPressed) {
+    return Material(
+      color: Colors.white.withValues(alpha: 0.15),
+      borderRadius: BorderRadius.circular(8),
+      child: InkWell(
+        onTap: onPressed,
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: Icon(icon, color: Colors.white, size: 20),
         ),
       ),
     );

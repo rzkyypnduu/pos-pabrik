@@ -28,11 +28,15 @@ class _TransaksiFormScreenState extends State<TransaksiFormScreen> {
   final _listScrollController = ScrollController();
   final Map<int, GlobalKey> _rowKeys = {};
   final _productFocusNode = FocusNode();
+  final _paidFocusNode = FocusNode();
 
   @override
   void initState() {
     super.initState();
     HardwareKeyboard.instance.addHandler(_handleHardwareKey);
+    _paidFocusNode.addListener(() {
+      if (mounted) setState(() {});
+    });
     final txProv = context.read<TransactionProvider>();
     txProv.loadCustomerNames();
     _nameController.text = txProv.txName;
@@ -52,8 +56,13 @@ class _TransaksiFormScreenState extends State<TransaksiFormScreen> {
   void _focusProducts() {
     final products = context.read<ProductProvider>().products;
     if (products.isNotEmpty) {
-      setState(() => _selectedProductId = products.first.id);
-      _focusQtyOf(products.first.id);
+      if (AppTheme.isMobile(context)) {
+        setState(() => _selectedProductId = products.first.id);
+        _ensureSelectedVisible();
+      } else {
+        setState(() => _selectedProductId = products.first.id);
+        _focusQtyOf(products.first.id);
+      }
     } else {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _productFocusNode.requestFocus();
@@ -96,6 +105,7 @@ class _TransaksiFormScreenState extends State<TransaksiFormScreen> {
       f.dispose();
     }
     _productFocusNode.dispose();
+    _paidFocusNode.dispose();
     _listScrollController.dispose();
     super.dispose();
   }
@@ -218,6 +228,7 @@ class _TransaksiFormScreenState extends State<TransaksiFormScreen> {
 
     return Scaffold(
       backgroundColor: AppTheme.bg,
+      resizeToAvoidBottomInset: !isMobile || _paidFocusNode.hasFocus,
       body: Column(
         children: [
           if (!isMobile)
@@ -325,8 +336,10 @@ class _TransaksiFormScreenState extends State<TransaksiFormScreen> {
       children: [
         Expanded(child: _productList(products, txProv)),
         const Divider(height: 1),
-        SizedBox(
-          height: MediaQuery.of(context).size.height * 0.45,
+        ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.45,
+          ),
           child: _paymentSummary(
             txProv,
             products,
@@ -713,6 +726,7 @@ class _TransaksiFormScreenState extends State<TransaksiFormScreen> {
     final paidNow =
         int.tryParse(txProv.txPaid.replaceAll('.', '').replaceAll(',', '')) ??
         0;
+    final isMobile = AppTheme.isMobile(context);
     return Container(
       color: Colors.white,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -810,6 +824,7 @@ class _TransaksiFormScreenState extends State<TransaksiFormScreen> {
                 Expanded(
                   child: TextField(
                     controller: _paidController,
+                    focusNode: _paidFocusNode,
                     keyboardType: TextInputType.number,
                     inputFormatters: [RupiahInputFormatter()],
                     style: const TextStyle(
@@ -849,17 +864,20 @@ class _TransaksiFormScreenState extends State<TransaksiFormScreen> {
               hasItems: hasItems,
               paidNow: paidNow,
             ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _noteController,
-              decoration: const InputDecoration(
-                labelText: 'Catatan',
-                isDense: true,
+            if (!isMobile) ...[
+              const SizedBox(height: 12),
+              TextField(
+                controller: _noteController,
+                decoration: const InputDecoration(
+                  labelText: 'Catatan',
+                  isDense: true,
+                ),
+                onChanged: (val) => txProv.setTxNote(val),
               ),
-              style: const TextStyle(fontSize: 12),
-              onChanged: (val) => txProv.setTxNote(val),
-            ),
-            const SizedBox(height: 16),
+              const SizedBox(height: 12),
+            ] else ...[
+              const SizedBox(height: 12),
+            ],
             SizedBox(
               width: double.infinity,
               height: 48,

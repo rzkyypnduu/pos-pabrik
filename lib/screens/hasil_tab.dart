@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../constants/app_theme.dart';
@@ -377,7 +379,7 @@ class _HutangPelangganSectionState extends State<_HutangPelangganSection> {
           setState(() {
             _editingId = id;
             _editingControllers[id] = TextEditingController(
-              text: remaining.toString(),
+              text: rupiahInputText(remaining),
             );
           });
         },
@@ -412,12 +414,15 @@ class _HutangPelangganSectionState extends State<_HutangPelangganSection> {
     }
     final controller = _editingControllers[id]!;
     return Row(
+      mainAxisSize: MainAxisSize.min,
       children: [
-        Expanded(
+        SizedBox(
+          width: 110,
           child: TextField(
             controller: controller,
             autofocus: true,
             keyboardType: TextInputType.number,
+            inputFormatters: [RupiahInputFormatter()],
             textAlign: TextAlign.right,
             style: const TextStyle(
               fontFamily: 'monospace',
@@ -442,7 +447,7 @@ class _HutangPelangganSectionState extends State<_HutangPelangganSection> {
 
   Future<void> _saveEdit(int id) async {
     final controller = _editingControllers[id];
-    final newRemaining = int.tryParse(controller!.text) ?? 0;
+    final newRemaining = parseRupiah(controller!.text);
     final ledgerProv = context.read<CustomerLedgerProvider>();
     await ledgerProv.adjustDebtCell(id, newRemaining);
     if (mounted) {
@@ -531,8 +536,7 @@ class _HutangPelangganSectionState extends State<_HutangPelangganSection> {
     CustomerLedgerProvider ledgerProv,
     List<String> names,
   ) {
-    final columnDates = <String>[];
-    final dataMap = <String, Map<String, List<Map<String, dynamic>>>>{};
+    final customerDebts = <String, List<Map<String, dynamic>>>{};
     final totals = <String, int>{};
 
     for (final name in names) {
@@ -540,69 +544,71 @@ class _HutangPelangganSectionState extends State<_HutangPelangganSection> {
       final activeDebts = processed['activeDebts'] as List<dynamic>;
       final totalSisa = processed['totalSisa'] as int;
       totals[name] = totalSisa;
-      final byDate = <String, List<Map<String, dynamic>>>{};
-      for (final d in activeDebts) {
-        final date = d['date'] as String;
-        if (!columnDates.contains(date)) {
-          columnDates.add(date);
-        }
-        byDate.putIfAbsent(date, () => []).add({
-          'id': d['id'],
-          'remaining': (d['remaining'] as num).toInt(),
-        });
-      }
-      dataMap[name] = byDate;
+      final debts = activeDebts
+          .map((d) => {
+                'id': d['id'],
+                'remaining': (d['remaining'] as num).toInt(),
+              })
+          .toList()
+        ..sort((a, b) => (a['id'] as int).compareTo(b['id'] as int));
+      customerDebts[name] = debts;
     }
-    final dedupKeys = List<String>.from(columnDates)..sort();
 
     const headerH = 34.0;
     const nameW = 200.0;
     const totalW = 130.0;
-    const dateW = 150.0;
-
-    final rowHeights = <double>[
-      for (final name in names) _estimateRowHeight(dataMap[name] ?? {}),
-    ];
-
-    final headerTanggal = Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        for (final key in dedupKeys)
-          SizedBox(
-            width: dateW,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 6),
-              child: Text(
-                key.substring(5).replaceAll('-', '/'),
-                style: const TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w700,
-                  color: AppTheme.inkSoft,
-                ),
-              ),
-            ),
-          ),
-      ],
-    );
-
-    final bodyTanggal = <int, Row>{
-      for (final entry in names.asMap().entries)
-        entry.key: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            for (final key in dedupKeys)
-              SizedBox(
-                width: dateW,
-                child: _dateCell((dataMap[entry.value] ?? {})[key]),
-              ),
-          ],
-        ),
-    };
+    const rowH = 48.0;
+    const namePadding = 24.0;
+    const nameIconBlock = 70.0;
 
     final isMobile = AppTheme.isMobile(context);
+    late final double nameColW;
+    late final double nameTextW;
+    late final List<double> rowHeights;
+
+    if (isMobile) {
+      var longest = 0.0;
+      for (final n in names) {
+        final tp = TextPainter(
+          text: TextSpan(
+            text: n,
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              height: 1.2,
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+        )..layout(maxWidth: double.infinity);
+        longest = math.max(longest, tp.width);
+      }
+      nameTextW = math.max(longest, 60);
+      nameColW = nameTextW + namePadding + nameIconBlock;
+      rowHeights = [for (final _ in names) rowH];
+    } else {
+      nameColW = nameW;
+      nameTextW = math.max(40.0, nameW - namePadding - nameIconBlock);
+      double estimateNameHeight(String name) {
+        final tp = TextPainter(
+          text: TextSpan(
+            text: name,
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              height: 1.2,
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+          maxLines: null,
+        )..layout(maxWidth: nameTextW);
+        return math.max(rowH, tp.height + 12);
+      }
+
+      rowHeights = [for (final name in names) estimateNameHeight(name)];
+    }
 
     final nameColumn = SizedBox(
-      width: nameW,
+      width: nameColW,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -621,34 +627,126 @@ class _HutangPelangganSectionState extends State<_HutangPelangganSection> {
             ),
           ),
           for (final entry in names.asMap().entries)
-            _nameRow(
-              entry.key,
-              entry.value,
-              rowHeights[entry.key],
-              ledgerProv,
-              totals,
+            Container(
+              height: rowHeights[entry.key],
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              alignment: Alignment.centerLeft,
+              decoration: BoxDecoration(
+                color: entry.key.isEven
+                    ? Colors.transparent
+                    : const Color(0xFFFAFAFA),
+                border: const Border(
+                  bottom: BorderSide(color: AppTheme.line, width: 0.5),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      entry.value,
+                      maxLines: isMobile ? 1 : null,
+                      overflow: isMobile ? TextOverflow.visible : null,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        height: 1.2,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  GestureDetector(
+                    onTap: () => _showAddDebtDialog(
+                      context,
+                      ledgerProv,
+                      presetName: entry.value,
+                    ),
+                    child: Container(
+                      padding: const EdgeInsets.all(3),
+                      decoration: BoxDecoration(
+                        color: AppTheme.accent,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: const Icon(
+                        Icons.add,
+                        size: 14,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  GestureDetector(
+                    onTap: () => ConfirmationDialog.show(
+                      context: context,
+                      title: 'Hapus Semua Hutang',
+                      message:
+                          'Hapus semua riwayat hutang $entry.value?',
+                      isDestructive: true,
+                      onConfirm: () async {
+                        await ledgerProv.deleteCustomerLedger(entry.value);
+                      },
+                    ),
+                    child: const Icon(
+                      Icons.delete_outline,
+                      size: 16,
+                      color: AppTheme.debt,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  GestureDetector(
+                    onTap: () => _printDebtReceipt(
+                      context,
+                      entry.value,
+                      totals[entry.value] ?? 0,
+                    ),
+                    child: const Icon(
+                      Icons.print,
+                      size: 18,
+                      color: AppTheme.accent,
+                    ),
+                  ),
+                ],
+              ),
             ),
         ],
       ),
     );
 
-    final datesColumn = Column(
+    final hutangColumn = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Container(
           color: AppTheme.ink.withValues(alpha: 0.08),
           height: headerH,
-          child: headerTanggal,
+          alignment: Alignment.centerLeft,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: const Text(
+            'HUTANG',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: AppTheme.inkSoft,
+            ),
+          ),
         ),
-        for (final r in names.asMap().entries)
-          SizedBox(
-            height: rowHeights[r.key],
-            child: Container(
-              color: r.key.isEven
-                  ? Colors.transparent
-                  : const Color(0xFFFAFAFA),
-              alignment: Alignment.centerLeft,
-              child: bodyTanggal[r.key]!,
+        for (final entry in names.asMap().entries)
+          Container(
+            height: rowHeights[entry.key],
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            color: entry.key.isEven ? Colors.transparent : const Color(0xFFFAFAFA),
+            alignment: Alignment.centerLeft,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (final debt in customerDebts[entry.value] ?? [])
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    child: _editableSisaCell(
+                      debt['id'] as int?,
+                      debt['remaining'] as int,
+                      alignLeft: true,
+                    ),
+                  ),
+              ],
             ),
           ),
       ],
@@ -705,7 +803,7 @@ class _HutangPelangganSectionState extends State<_HutangPelangganSection> {
               scrollDirection: Axis.horizontal,
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
-                children: [nameColumn, datesColumn, totalColumn],
+                children: [nameColumn, hutangColumn, totalColumn],
               ),
             )
           : Row(
@@ -715,115 +813,12 @@ class _HutangPelangganSectionState extends State<_HutangPelangganSection> {
                 Expanded(
                   child: SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
-                    child: datesColumn,
+                    child: hutangColumn,
                   ),
                 ),
                 totalColumn,
               ],
             ),
-    );
-  }
-
-  double _estimateRowHeight(Map<String, List<Map<String, dynamic>>> byDate) {
-    var maxEntries = 1;
-    for (final entries in byDate.values) {
-      if (entries.length > maxEntries) {
-        maxEntries = entries.length;
-      }
-    }
-    final contentH = maxEntries * 40.0 + 8.0;
-    return contentH < 48.0 ? 48.0 : contentH;
-  }
-
-  Widget _dateCell(List<Map<String, dynamic>>? entries) {
-    if (entries == null || entries.isEmpty) {
-      return const Center(
-        child: Text(
-          '-',
-          style: TextStyle(fontSize: 12, color: AppTheme.inkSoft),
-        ),
-      );
-    }
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: List.generate(entries.length, (i) {
-        final e = entries[i];
-        return Padding(
-          padding: EdgeInsets.only(
-            top: i == 0 ? 4 : 0,
-            bottom: i == entries.length - 1 ? 4 : 2,
-          ),
-          child: _editableSisaCell(
-            e['id'] as int?,
-            e['remaining'] as int,
-            alignLeft: i == 0,
-          ),
-        );
-      }),
-    );
-  }
-
-  Widget _nameRow(
-    int index,
-    String name,
-    double rowH,
-    CustomerLedgerProvider ledgerProv,
-    Map<String, int> totals,
-  ) {
-    return Container(
-      height: rowH,
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: BoxDecoration(
-        color: index.isEven ? Colors.transparent : const Color(0xFFFAFAFA),
-        border: const Border(
-          bottom: BorderSide(color: AppTheme.line, width: 0.5),
-        ),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              name,
-              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          const SizedBox(width: 4),
-          GestureDetector(
-            onTap: () =>
-                _showAddDebtDialog(context, ledgerProv, presetName: name),
-            child: Container(
-              padding: const EdgeInsets.all(3),
-              decoration: BoxDecoration(
-                color: AppTheme.accent,
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: const Icon(Icons.add, size: 14, color: Colors.white),
-            ),
-          ),
-          const SizedBox(width: 6),
-          GestureDetector(
-            onTap: () => ConfirmationDialog.show(
-              context: context,
-              title: 'Hapus Hutang',
-              message: 'Hapus semua riwayat hutang $name?',
-              isDestructive: true,
-              onConfirm: () => ledgerProv.deleteCustomerLedger(name),
-            ),
-            child: const Icon(
-              Icons.delete_outline,
-              size: 18,
-              color: AppTheme.debt,
-            ),
-          ),
-          const SizedBox(width: 6),
-          GestureDetector(
-            onTap: () => _printDebtReceipt(context, name, totals[name] ?? 0),
-            child: const Icon(Icons.print, size: 18, color: AppTheme.accent),
-          ),
-        ],
-      ),
     );
   }
 
@@ -1245,7 +1240,7 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
                     if (isMobile)
                       Flexible(
                         child: Text(
-                          'Bulan: ${rupiahD(smProv.monthTotal)}',
+                          'Total: ${rupiahD(smProv.monthTotal)}',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
@@ -1257,7 +1252,7 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
                       )
                     else
                       Text(
-                        'Bulan: ${rupiahD(smProv.monthTotal)}',
+                        'Total: ${rupiahD(smProv.monthTotal)}',
                         style: const TextStyle(
                           fontFamily: 'monospace',
                           fontWeight: FontWeight.w700,
@@ -1408,6 +1403,7 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
     StockManagementProvider smProv,
   ) {
     final holderTotal = items.fold<int>(0, (sum, s) => sum + s.subtotal);
+    final isMobile = AppTheme.isMobile(context);
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
@@ -1466,235 +1462,259 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
               ],
             ),
           ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Container(
-                color: AppTheme.ink.withValues(alpha: 0.08),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 6,
-                ),
-                child: const Row(
-                  children: [
-                    Expanded(
-                      flex: 2,
-                      child: Text(
-                        'TANGGAL',
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w700,
-                          color: AppTheme.inkSoft,
-                        ),
-                      ),
-                    ),
-                    Expanded(
-                      flex: 1,
-                      child: Text(
-                        'SAK',
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w700,
-                          color: AppTheme.inkSoft,
-                        ),
-                      ),
-                    ),
-                    Expanded(
-                      flex: 1,
-                      child: Text(
-                        'KG',
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w700,
-                          color: AppTheme.inkSoft,
-                        ),
-                      ),
-                    ),
-                    Expanded(
-                      flex: 2,
-                      child: Text(
-                        'HARGA/SAK',
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w700,
-                          color: AppTheme.inkSoft,
-                        ),
-                      ),
-                    ),
-                    Expanded(
-                      flex: 2,
-                      child: Text(
-                        'SUBTOTAL',
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w700,
-                          color: AppTheme.inkSoft,
-                        ),
-                        textAlign: TextAlign.right,
-                      ),
-                    ),
-                    SizedBox(width: 40),
-                  ],
-                ),
-              ),
-              ...items.asMap().entries.expand((entry2) {
-                final sm = entry2.value;
-                final batches = sm.batches ?? [];
-                return batches.asMap().entries.map((bEntry) {
-                  final bi = bEntry.key;
-                  final batch = bEntry.value;
-                  final sacks = (batch['sacks'] as List?) ?? [];
-                  final batchId = batch['id'] as String?;
-                  final batchQty = sacks.fold<double>(
-                    0,
-                    (a, b) => a + (b as num).toDouble(),
-                  );
-                  final batchPrice =
-                      (batch['price'] as num?)?.toInt() ?? sm.price;
-                  final batchSubtotal = batchQty * batchPrice;
-                  final editKey = '${sm.id}_$batchId';
-                  final isEditing = _editingBatchKey == editKey;
-                  final isPriceEditing = _editingPriceKey == editKey;
-
-                  return Container(
-                    decoration: const BoxDecoration(
-                      border: Border(
-                        bottom: BorderSide(color: AppTheme.line, width: 0.5),
-                      ),
-                    ),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 6,
-                    ),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          flex: 2,
-                          child: Text(
-                            bi == 0 ? fmtDate(sm.date) : '',
-                            style: const TextStyle(fontSize: 11),
-                          ),
-                        ),
-                        Expanded(
-                          flex: 1,
-                          child: Text(
-                            'Sak ${bi + 1}',
-                            style: const TextStyle(fontSize: 11),
-                          ),
-                        ),
-                        Expanded(
-                          flex: 1,
-                          child: isEditing
-                              ? TextField(
-                                  controller: _editControllers[editKey],
-                                  autofocus: true,
-                                  keyboardType: TextInputType.number,
-                                  style: const TextStyle(
-                                    fontFamily: 'monospace',
-                                    fontSize: 11,
-                                  ),
-                                  decoration: const InputDecoration(
-                                    isDense: true,
-                                    contentPadding: EdgeInsets.all(4),
-                                  ),
-                                  onSubmitted: (_) =>
-                                      _saveBatchEdit(sm.id!, batchId!, smProv),
-                                )
-                              : GestureDetector(
-                                  onTap: () {
-                                    setState(() {
-                                      _editingBatchKey = editKey;
-                                      _editControllers[editKey] =
-                                          TextEditingController(
-                                            text: fmtKg(batchQty),
-                                          );
-                                    });
-                                  },
-                                  child: Text(
-                                    fmtKg(batchQty),
-                                    style: const TextStyle(
-                                      fontFamily: 'monospace',
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w700,
-                                      color: AppTheme.accent,
-                                    ),
-                                  ),
-                                ),
-                        ),
-                        Expanded(
-                          flex: 2,
-                          child: isPriceEditing
-                              ? TextField(
-                                  controller: _editPriceControllers[editKey],
-                                  autofocus: true,
-                                  keyboardType: TextInputType.number,
-                                  inputFormatters: [RupiahInputFormatter(allowDecimal: true)],
-                                  style: const TextStyle(
-                                    fontFamily: 'monospace',
-                                    fontSize: 11,
-                                  ),
-                                  decoration: const InputDecoration(
-                                    isDense: true,
-                                    contentPadding: EdgeInsets.all(6),
-                                  ),
-                                  onSubmitted: (_) =>
-                                      _savePriceEdit(sm.id!, batchId!, smProv),
-                                )
-                              : GestureDetector(
-                                  onTap: () {
-                                    setState(() {
-                                      _editingPriceKey = editKey;
-                                      _editPriceControllers[editKey] =
-                                          TextEditingController(
-                                            text: batchPrice.toString(),
-                                          );
-                                    });
-                                  },
-                                  child: Text(
-                                    rupiahD(batchPrice),
-                                    style: const TextStyle(
-                                      fontFamily: 'monospace',
-                                      fontSize: 11,
-                                      color: AppTheme.accent,
-                                    ),
-                                  ),
-                                ),
-                        ),
-                        Expanded(
-                          flex: 2,
-                          child: Text(
-                            rupiahD(batchSubtotal),
-                            style: const TextStyle(
-                              fontFamily: 'monospace',
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
-                            ),
-                            textAlign: TextAlign.right,
-                          ),
-                        ),
-                        SizedBox(
-                          width: 40,
-                          child: IconButton(
-                            icon: const Icon(
-                              Icons.delete_outline,
-                              size: 16,
-                              color: AppTheme.debt,
-                            ),
-                            onPressed: () =>
-                                smProv.deleteStockBatch(sm.id!, batchId!),
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                });
-              }),
-              _buildTotalRow(items),
-            ],
-          ),
+          _buildHolderTable(items, smProv, isMobile),
         ],
       ),
     );
+  }
+
+  Widget _buildHolderTable(
+    List<StockManagement> items,
+    StockManagementProvider smProv,
+    bool isMobile,
+  ) {
+    const double cDate = 90;
+    final double cSak = isMobile ? 48 : 55;
+    final double cKg = isMobile ? 52 : 65;
+    final double cPrice = isMobile ? 100 : 120;
+    final double cSub = isMobile ? 100 : 120;
+    final double cDel = isMobile ? 28 : 40;
+    final double tableW = isMobile
+        ? cSak + cKg + cPrice + cSub + cDel + 24
+        : cDate + cSak + cKg + cPrice + cSub + cDel + 24;
+
+    final headerRow = Container(
+      color: AppTheme.ink.withValues(alpha: 0.08),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: Row(
+        children: [
+          if (!isMobile)
+            SizedBox(
+              width: cDate,
+              child: const Text(
+                'TANGGAL',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  color: AppTheme.inkSoft,
+                ),
+              ),
+            ),
+          SizedBox(
+            width: cSak,
+            child: const Text(
+              'SAK',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                color: AppTheme.inkSoft,
+              ),
+            ),
+          ),
+          SizedBox(
+            width: cKg,
+            child: const Text(
+              'KG',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                color: AppTheme.inkSoft,
+              ),
+            ),
+          ),
+          SizedBox(
+            width: cPrice,
+            child: const Text(
+              'HARGA/SAK',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                color: AppTheme.inkSoft,
+              ),
+            ),
+          ),
+          SizedBox(
+            width: cSub,
+            child: const Text(
+              'SUBTOTAL',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                color: AppTheme.inkSoft,
+              ),
+              textAlign: TextAlign.right,
+            ),
+          ),
+          SizedBox(width: cDel),
+        ],
+      ),
+    );
+
+    final dataRows = items.asMap().entries.expand((entry2) {
+      final sm = entry2.value;
+      final batches = sm.batches ?? [];
+      return batches.asMap().entries.map((bEntry) {
+        final bi = bEntry.key;
+        final batch = bEntry.value;
+        final sacks = (batch['sacks'] as List?) ?? [];
+        final batchId = batch['id'] as String?;
+        final batchQty = sacks.fold<double>(
+          0,
+          (a, b) => a + (b as num).toDouble(),
+        );
+        final batchPrice = (batch['price'] as num?)?.toInt() ?? sm.price;
+        final batchSubtotal = batchQty * batchPrice;
+        final editKey = '${sm.id}_$batchId';
+        final isEditing = _editingBatchKey == editKey;
+        final isPriceEditing = _editingPriceKey == editKey;
+
+        return Container(
+          decoration: const BoxDecoration(
+            border: Border(
+              bottom: BorderSide(color: AppTheme.line, width: 0.5),
+            ),
+          ),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          child: Row(
+            children: [
+              if (!isMobile)
+                SizedBox(
+                  width: cDate,
+                  child: Text(
+                    bi == 0 ? fmtDate(sm.date) : '',
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                ),
+              SizedBox(
+                width: cSak,
+                child: Text(
+                  'Sak ${bi + 1}',
+                  style: const TextStyle(fontSize: 11),
+                ),
+              ),
+              SizedBox(
+                width: cKg,
+                child: isEditing
+                    ? TextField(
+                        controller: _editControllers[editKey],
+                        autofocus: true,
+                        keyboardType: TextInputType.number,
+                        style: const TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 11,
+                        ),
+                        decoration: const InputDecoration(
+                          isDense: true,
+                          contentPadding: EdgeInsets.all(4),
+                        ),
+                        onSubmitted: (_) =>
+                            _saveBatchEdit(sm.id!, batchId!, smProv),
+                      )
+                    : GestureDetector(
+                        onTap: () {
+                          setState(() {
+                            _editingBatchKey = editKey;
+                            _editControllers[editKey] = TextEditingController(
+                              text: fmtKg(batchQty),
+                            );
+                          });
+                        },
+                        child: Text(
+                          fmtKg(batchQty),
+                          style: const TextStyle(
+                            fontFamily: 'monospace',
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            color: AppTheme.accent,
+                          ),
+                        ),
+                      ),
+              ),
+              SizedBox(
+                width: cPrice,
+                child: isPriceEditing
+                    ? TextField(
+                        controller: _editPriceControllers[editKey],
+                        autofocus: true,
+                        keyboardType: TextInputType.number,
+                        inputFormatters: [
+                          RupiahInputFormatter(allowDecimal: true),
+                        ],
+                        style: const TextStyle(
+                          fontFamily: 'monospace',
+                          fontSize: 11,
+                        ),
+                        decoration: const InputDecoration(
+                          isDense: true,
+                          contentPadding: EdgeInsets.all(6),
+                        ),
+                        onSubmitted: (_) =>
+                            _savePriceEdit(sm.id!, batchId!, smProv),
+                      )
+                    : GestureDetector(
+                        onTap: () {
+                          setState(() {
+                            _editingPriceKey = editKey;
+                            _editPriceControllers[editKey] =
+                                TextEditingController(
+                                  text: batchPrice.toString(),
+                                );
+                          });
+                        },
+                        child: Text(
+                          rupiahD(batchPrice),
+                          style: const TextStyle(
+                            fontFamily: 'monospace',
+                            fontSize: 11,
+                            color: AppTheme.accent,
+                          ),
+                        ),
+                      ),
+              ),
+              SizedBox(
+                width: cSub,
+                child: Text(
+                  rupiahD(batchSubtotal),
+                  style: const TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  textAlign: TextAlign.right,
+                ),
+              ),
+              SizedBox(
+                width: cDel,
+                child: IconButton(
+                  icon: const Icon(
+                    Icons.delete_outline,
+                    size: 16,
+                    color: AppTheme.debt,
+                  ),
+                  onPressed: () =>
+                      smProv.deleteStockBatch(sm.id!, batchId!),
+                ),
+              ),
+            ],
+          ),
+        );
+      });
+    });
+
+    final totalRow = _buildTotalRow(items, isMobile: isMobile);
+
+    final tableContent = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [headerRow, ...dataRows, totalRow],
+    );
+
+    if (isMobile) {
+      return FittedBox(
+        fit: BoxFit.scaleDown,
+        child: SizedBox(width: tableW, child: tableContent),
+      );
+    }
+    return tableContent;
   }
 
   void _showAddSackDialog(
@@ -1805,7 +1825,10 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
     });
   }
 
-  Widget _buildTotalRow(List<StockManagement> items) {
+  Widget _buildTotalRow(
+    List<StockManagement> items, {
+    bool isMobile = false,
+  }) {
     double totalKg = 0;
     double totalSub = 0;
     for (final sm in items) {
@@ -1820,21 +1843,26 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
         totalSub += batchQty * batchPrice;
       }
     }
+    final cSak = isMobile ? 48.0 : 55.0;
+    final cKg = isMobile ? 52.0 : 65.0;
+    final cPrice = isMobile ? 100.0 : 120.0;
+    final cSub = isMobile ? 100.0 : 120.0;
+    final cDel = isMobile ? 28.0 : 40.0;
     return Container(
       color: AppTheme.ink.withValues(alpha: 0.08),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       child: Row(
         children: [
-          const Expanded(flex: 2, child: SizedBox()),
-          const Expanded(
-            flex: 1,
-            child: Text(
+          if (!isMobile) const SizedBox(width: 90),
+          SizedBox(
+            width: cSak,
+            child: const Text(
               'TOTAL',
               style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800),
             ),
           ),
-          Expanded(
-            flex: 1,
+          SizedBox(
+            width: cKg,
             child: Text(
               fmtKg(totalKg),
               style: const TextStyle(
@@ -1844,9 +1872,11 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
               ),
             ),
           ),
-          const Expanded(flex: 2, child: SizedBox()),
-          Expanded(
-            flex: 2,
+          SizedBox(
+            width: cPrice,
+          ),
+          SizedBox(
+            width: cSub,
             child: Text(
               rupiahD(totalSub),
               style: const TextStyle(
@@ -1857,7 +1887,7 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
               textAlign: TextAlign.right,
             ),
           ),
-          const SizedBox(width: 40),
+          SizedBox(width: cDel),
         ],
       ),
     );
@@ -2123,211 +2153,242 @@ class _SisaBarangSectionState extends State<_SisaBarangSection> {
   }
 
   Widget _buildList(StockRemainingProvider srProv) {
+    final isMobile = AppTheme.isMobile(context);
+    const double cDate = 90;
+    final double cName = isMobile ? 110 : 120;
+    final double cKg = isMobile ? 52 : 65;
+    final double cPrice = isMobile ? 100 : 120;
+    final double cSub = isMobile ? 100 : 120;
+    final double cDel = isMobile ? 28 : 40;
+    final double tableW = isMobile
+        ? cName + cKg + cPrice + cSub + cDel + 24
+        : cDate + cName + cKg + cPrice + cSub + cDel + 24;
+
+    final headerRow = Container(
+      color: AppTheme.ink.withValues(alpha: 0.08),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Row(
+        children: [
+          if (!isMobile)
+            SizedBox(
+              width: cDate,
+              child: const Text(
+                'TANGGAL',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  color: AppTheme.inkSoft,
+                ),
+              ),
+            ),
+          SizedBox(
+            width: cName,
+            child: Text(
+              'NAMA',
+              style: const TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                color: AppTheme.inkSoft,
+              ),
+            ),
+          ),
+          SizedBox(
+            width: cKg,
+            child: Text(
+              'KG',
+              style: const TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                color: AppTheme.inkSoft,
+              ),
+            ),
+          ),
+          SizedBox(
+            width: cPrice,
+            child: Text(
+              'HARGA/kg',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                color: AppTheme.inkSoft,
+              ),
+            ),
+          ),
+          SizedBox(
+            width: cSub,
+            child: Text(
+              'SUBTOTAL',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                color: AppTheme.inkSoft,
+              ),
+              textAlign: TextAlign.right,
+            ),
+          ),
+          SizedBox(width: cDel),
+        ],
+      ),
+    );
+
+    final dataRows = srProv.monthStocks.asMap().entries.map((entry) {
+      final sr = entry.value;
+      final isEditing = _editingId == sr.id;
+      final isPriceEditing = _editingPriceId == sr.id;
+      return Container(
+        decoration: const BoxDecoration(
+          border: Border(
+            bottom: BorderSide(color: AppTheme.line, width: 0.5),
+          ),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        child: Row(
+          children: [
+            if (!isMobile)
+              SizedBox(
+                width: cDate,
+                child: Text(
+                  fmtDate(sr.date),
+                  style: const TextStyle(fontSize: 11),
+                ),
+              ),
+            SizedBox(
+              width: cName,
+              child: Text(
+                sr.name,
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            SizedBox(
+              width: cKg,
+              child: isEditing
+                  ? TextField(
+                      controller: _editQtyControllers.putIfAbsent(
+                        sr.id!,
+                        () => TextEditingController(text: fmtKg(sr.qty)),
+                      ),
+                      autofocus: true,
+                      keyboardType: TextInputType.number,
+                      style: const TextStyle(fontSize: 11),
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        contentPadding: EdgeInsets.all(4),
+                      ),
+                      onSubmitted: (_) => _saveQtyEdit(sr),
+                    )
+                  : GestureDetector(
+                      onTap: () => setState(() {
+                        _editingId = sr.id;
+                        _editQtyControllers[sr.id!] =
+                            TextEditingController(text: fmtKg(sr.qty));
+                      }),
+                      child: Text(
+                        fmtKg(sr.qty),
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: AppTheme.accent,
+                        ),
+                      ),
+                    ),
+            ),
+            SizedBox(
+              width: cPrice,
+              child: isPriceEditing
+                  ? TextField(
+                      controller: _editPriceControllers.putIfAbsent(
+                        sr.id!,
+                        () => TextEditingController(
+                          text: sr.price.toString(),
+                        ),
+                      ),
+                      autofocus: true,
+                      keyboardType: TextInputType.number,
+                      inputFormatters: [
+                        RupiahInputFormatter(allowDecimal: true),
+                      ],
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontFamily: 'monospace',
+                      ),
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        contentPadding: EdgeInsets.all(6),
+                      ),
+                      onSubmitted: (_) => _savePriceEdit(sr),
+                    )
+                  : GestureDetector(
+                      onTap: () => setState(() {
+                        _editingPriceId = sr.id;
+                        _editPriceControllers[sr.id!] =
+                            TextEditingController(
+                              text: sr.price.toString(),
+                            );
+                      }),
+                      child: Text(
+                        rupiahD(sr.price),
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: AppTheme.debt,
+                        ),
+                      ),
+                    ),
+            ),
+            SizedBox(
+              width: cSub,
+              child: Text(
+                rupiahD(sr.subtotal),
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+                textAlign: TextAlign.right,
+              ),
+            ),
+            SizedBox(
+              width: cDel,
+              child: IconButton(
+                icon: const Icon(
+                  Icons.delete_outline,
+                  size: 16,
+                  color: AppTheme.debt,
+                ),
+                onPressed: () => srProv.deleteRemain(sr.id!),
+              ),
+            ),
+          ],
+        ),
+      );
+    });
+
+    final tableContent = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [headerRow, ...dataRows],
+    );
+
+    if (isMobile) {
+      return Container(
+        decoration: BoxDecoration(
+          border: Border.all(color: AppTheme.line),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: SizedBox(width: tableW, child: tableContent),
+        ),
+      );
+    }
     return Container(
       decoration: BoxDecoration(
         border: Border.all(color: AppTheme.line),
         borderRadius: BorderRadius.circular(8),
       ),
       clipBehavior: Clip.antiAlias,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Container(
-            color: AppTheme.ink.withValues(alpha: 0.08),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            child: const Row(
-              children: [
-                Expanded(
-                  flex: 2,
-                  child: Text(
-                    'TANGGAL',
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.inkSoft,
-                    ),
-                  ),
-                ),
-                Expanded(
-                  flex: 3,
-                  child: Text(
-                    'NAMA',
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.inkSoft,
-                    ),
-                  ),
-                ),
-                Expanded(
-                  flex: 1,
-                  child: Text(
-                    'KG',
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.inkSoft,
-                    ),
-                  ),
-                ),
-                Expanded(
-                  flex: 2,
-                  child: Text(
-                    'HARGA/kg',
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.inkSoft,
-                    ),
-                  ),
-                ),
-                Expanded(
-                  flex: 2,
-                  child: Text(
-                    'SUBTOTAL',
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.inkSoft,
-                    ),
-                    textAlign: TextAlign.right,
-                  ),
-                ),
-                SizedBox(width: 40),
-              ],
-            ),
-          ),
-          ...srProv.monthStocks.asMap().entries.map((entry) {
-            final sr = entry.value;
-            final isEditing = _editingId == sr.id;
-            final isPriceEditing = _editingPriceId == sr.id;
-            return Container(
-              decoration: const BoxDecoration(
-                border: Border(
-                  bottom: BorderSide(color: AppTheme.line, width: 0.5),
-                ),
-              ),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              child: Row(
-                children: [
-                  Expanded(
-                    flex: 2,
-                    child: Text(
-                      fmtDate(sr.date),
-                      style: const TextStyle(fontSize: 11),
-                    ),
-                  ),
-                  Expanded(
-                    flex: 3,
-                    child: Text(
-                      sr.name,
-                      style: const TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                  Expanded(
-                    flex: 1,
-                    child: isEditing
-                        ? TextField(
-                            controller: _editQtyControllers.putIfAbsent(
-                              sr.id!,
-                              () => TextEditingController(text: fmtKg(sr.qty)),
-                            ),
-                            autofocus: true,
-                            keyboardType: TextInputType.number,
-                            style: const TextStyle(fontSize: 11),
-                            decoration: const InputDecoration(
-                              isDense: true,
-                              contentPadding: EdgeInsets.all(4),
-                            ),
-                            onSubmitted: (_) => _saveQtyEdit(sr),
-                          )
-                        : GestureDetector(
-                            onTap: () => setState(() {
-                              _editingId = sr.id;
-                              _editQtyControllers[sr.id!] =
-                                  TextEditingController(text: fmtKg(sr.qty));
-                            }),
-                            child: Text(
-                              fmtKg(sr.qty),
-                              style: const TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w700,
-                                color: AppTheme.accent,
-                              ),
-                            ),
-                          ),
-                  ),
-                  Expanded(
-                    flex: 2,
-                    child: isPriceEditing
-                        ? TextField(
-                            controller: _editPriceControllers.putIfAbsent(
-                              sr.id!,
-                              () => TextEditingController(
-                                text: sr.price.toString(),
-                              ),
-                            ),
-                            autofocus: true,
-                            keyboardType: TextInputType.number,
-                            inputFormatters: [RupiahInputFormatter(allowDecimal: true)],
-                            style: const TextStyle(
-                              fontSize: 11,
-                              fontFamily: 'monospace',
-                            ),
-                            decoration: const InputDecoration(
-                              isDense: true,
-                              contentPadding: EdgeInsets.all(6),
-                            ),
-                            onSubmitted: (_) => _savePriceEdit(sr),
-                          )
-                        : GestureDetector(
-                            onTap: () => setState(() {
-                              _editingPriceId = sr.id;
-                              _editPriceControllers[sr.id!] =
-                                  TextEditingController(
-                                    text: sr.price.toString(),
-                                  );
-                            }),
-                            child: Text(
-                              rupiahD(sr.price),
-                              style: const TextStyle(
-                                fontSize: 11,
-                                color: AppTheme.debt,
-                              ),
-                            ),
-                          ),
-                  ),
-                  Expanded(
-                    flex: 2,
-                    child: Text(
-                      rupiahD(sr.subtotal),
-                      style: const TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                      ),
-                      textAlign: TextAlign.right,
-                    ),
-                  ),
-                  SizedBox(
-                    width: 40,
-                    child: IconButton(
-                      icon: const Icon(
-                        Icons.delete_outline,
-                        size: 16,
-                        color: AppTheme.debt,
-                      ),
-                      onPressed: () => srProv.deleteRemain(sr.id!),
-                    ),
-                  ),
-                ],
-              ),
-            );
-          }),
-        ],
-      ),
+      child: tableContent,
     );
   }
 
@@ -2336,12 +2397,22 @@ class _SisaBarangSectionState extends State<_SisaBarangSection> {
     if (controller == null) return;
     final newQty = double.tryParse(controller.text.replaceAll(',', '.')) ?? 0;
     final srProv = context.read<StockRemainingProvider>();
-    await srProv.updateRemain(
-      sr.id!,
-      newQty,
-      sr.price,
-      sr.date ?? todayString(),
-    );
+    final selectedDate = context.read<TabProvider>().selectedDate;
+    if (sr.date == selectedDate) {
+      await srProv.updateRemain(
+        sr.id!,
+        newQty,
+        sr.price,
+        sr.date ?? todayString(),
+      );
+    } else {
+      await srProv.addRemain(
+        selectedDate,
+        Product(id: 0, name: sr.name, price: sr.price),
+        newQty,
+        sr.price,
+      );
+    }
     if (mounted) {
       setState(() {
         _editingId = null;
@@ -2354,12 +2425,22 @@ class _SisaBarangSectionState extends State<_SisaBarangSection> {
     if (controller == null) return;
     final newPrice = int.tryParse(controller.text.split(',').first.replaceAll('.', '')) ?? 0;
     final srProv = context.read<StockRemainingProvider>();
-    await srProv.updateRemain(
-      sr.id!,
-      sr.qty,
-      newPrice,
-      sr.date ?? todayString(),
-    );
+    final selectedDate = context.read<TabProvider>().selectedDate;
+    if (sr.date == selectedDate) {
+      await srProv.updateRemain(
+        sr.id!,
+        sr.qty,
+        newPrice,
+        sr.date ?? todayString(),
+      );
+    } else {
+      await srProv.addRemain(
+        selectedDate,
+        Product(id: 0, name: sr.name, price: newPrice),
+        sr.qty,
+        newPrice,
+      );
+    }
     if (mounted) {
       setState(() {
         _editingPriceId = null;
@@ -2573,7 +2654,12 @@ class _HutangPribadiSectionState extends State<_HutangPribadiSection> {
       _cancelEdit();
       return;
     }
-    await plProv.updateEntry(pl.id!, name, amount, note);
+    final selectedDate = context.read<TabProvider>().selectedDate;
+    if (pl.date == selectedDate) {
+      await plProv.updateEntry(pl.id!, name, amount, note);
+    } else {
+      await plProv.addHutangPribadi(selectedDate, name, amount, note);
+    }
     widget.onSaved?.call();
     if (mounted) {
       setState(() {
@@ -2606,7 +2692,7 @@ class _HutangPribadiSectionState extends State<_HutangPribadiSection> {
               keyboardType: isAmount ? TextInputType.number : TextInputType.text,
               inputFormatters:
                   isAmount ? [RupiahInputFormatter(allowDecimal: true)] : null,
-              textAlign: isAmount ? TextAlign.right : TextAlign.left,
+              textAlign: TextAlign.left,
               style: style ?? const TextStyle(fontSize: 11),
               decoration: const InputDecoration(
                 isDense: true,
@@ -2639,148 +2725,177 @@ class _HutangPribadiSectionState extends State<_HutangPribadiSection> {
               color: AppTheme.accent,
             ),
         textAlign: textAlign,
-        overflow: TextOverflow.ellipsis,
+        softWrap: true,
+        maxLines: null,
       ),
     );
   }
 
   Widget _buildList(PersonalLedgerProvider plProv) {
+    final isMobile = AppTheme.isMobile(context);
+    const double cDate = 90;
+    final double cName = isMobile ? 100 : 120;
+    final double cAmt = isMobile ? 100 : 120;
+    final double cNote = isMobile ? 130 : 150;
+    final double cDel = isMobile ? 28 : 40;
+    final double tableW = isMobile
+        ? cName + cAmt + cNote + cDel + 24
+        : cDate + cName + cAmt + cNote + cDel + 24;
+
+    final headerRow = Container(
+      color: AppTheme.ink.withValues(alpha: 0.08),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Row(
+        children: [
+          if (!isMobile)
+            SizedBox(
+              width: cDate,
+              child: const Text(
+                'TANGGAL',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  color: AppTheme.inkSoft,
+                ),
+              ),
+            ),
+          SizedBox(
+            width: cName,
+            child: Text(
+              'NAMA',
+              style: const TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                color: AppTheme.inkSoft,
+              ),
+            ),
+          ),
+          SizedBox(
+            width: cAmt,
+            child: Text(
+              'JUMLAH',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                color: AppTheme.inkSoft,
+              ),
+              textAlign: TextAlign.left,
+            ),
+          ),
+          SizedBox(
+            width: cNote,
+            child: Text(
+              'CATATAN',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                color: AppTheme.inkSoft,
+              ),
+            ),
+          ),
+          SizedBox(width: cDel),
+        ],
+      ),
+    );
+
+    final dataRows = plProv.monthLedgers.asMap().entries.map((entry) {
+      final pl = entry.value;
+      return Container(
+        decoration: const BoxDecoration(
+          border: Border(
+            bottom: BorderSide(color: AppTheme.line, width: 0.5),
+          ),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        child: Row(
+          children: [
+            if (!isMobile)
+              SizedBox(
+                width: cDate,
+                child: Text(
+                  fmtDate(pl.date),
+                  style: const TextStyle(fontSize: 11),
+                ),
+              ),
+            SizedBox(
+              width: cName,
+              child: _editableCell(
+                pl,
+                'name',
+                pl.name,
+                plProv,
+                editValue: pl.name,
+              ),
+            ),
+            SizedBox(
+              width: cAmt,
+              child: _editableCell(
+                pl,
+                'amount',
+                rupiahD(pl.amount),
+                plProv,
+                editValue: pl.amount.toString(),
+                bold: true,
+                textAlign: TextAlign.left,
+              ),
+            ),
+            SizedBox(
+              width: cNote,
+              child: _editableCell(
+                pl,
+                'note',
+                pl.note ?? '',
+                plProv,
+                editValue: pl.note ?? '',
+                style: const TextStyle(
+                  fontSize: 11,
+                  color: AppTheme.inkSoft,
+                ),
+              ),
+            ),
+            SizedBox(
+              width: cDel,
+              child: IconButton(
+                icon: const Icon(
+                  Icons.delete_outline,
+                  size: 16,
+                  color: AppTheme.debt,
+                ),
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                onPressed: () => plProv.deleteEntry(pl.id!),
+              ),
+            ),
+          ],
+        ),
+      );
+    });
+
+    final tableContent = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [headerRow, ...dataRows],
+    );
+
+    if (isMobile) {
+      return Container(
+        decoration: BoxDecoration(
+          border: Border.all(color: AppTheme.line),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: SizedBox(width: tableW, child: tableContent),
+        ),
+      );
+    }
     return Container(
       decoration: BoxDecoration(
         border: Border.all(color: AppTheme.line),
         borderRadius: BorderRadius.circular(8),
       ),
       clipBehavior: Clip.antiAlias,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Container(
-            color: AppTheme.ink.withValues(alpha: 0.08),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            child: const Row(
-              children: [
-                Expanded(
-                  flex: 2,
-                  child: Text(
-                    'TANGGAL',
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.inkSoft,
-                    ),
-                  ),
-                ),
-                Expanded(
-                  flex: 3,
-                  child: Text(
-                    'NAMA',
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.inkSoft,
-                    ),
-                  ),
-                ),
-                Expanded(
-                  flex: 2,
-                  child: Text(
-                    'JUMLAH',
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.inkSoft,
-                    ),
-                    textAlign: TextAlign.right,
-                  ),
-                ),
-                Expanded(
-                  flex: 3,
-                  child: Text(
-                    'CATATAN',
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.inkSoft,
-                    ),
-                  ),
-                ),
-                SizedBox(width: 40),
-              ],
-            ),
-          ),
-          ...plProv.monthLedgers.asMap().entries.map((entry) {
-            final pl = entry.value;
-            return Container(
-              decoration: const BoxDecoration(
-                border: Border(
-                  bottom: BorderSide(color: AppTheme.line, width: 0.5),
-                ),
-              ),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              child: Row(
-                children: [
-                  Expanded(
-                    flex: 2,
-                    child: Text(
-                      fmtDate(pl.date),
-                      style: const TextStyle(fontSize: 11),
-                    ),
-                  ),
-                  Expanded(
-                    flex: 3,
-                    child: _editableCell(
-                      pl,
-                      'name',
-                      pl.name,
-                      plProv,
-                      editValue: pl.name,
-                    ),
-                  ),
-                  Expanded(
-                    flex: 2,
-                    child: _editableCell(
-                      pl,
-                      'amount',
-                      rupiahD(pl.amount),
-                      plProv,
-                      editValue: pl.amount.toString(),
-                      bold: true,
-                      textAlign: TextAlign.right,
-                    ),
-                  ),
-                  Expanded(
-                    flex: 3,
-                    child: _editableCell(
-                      pl,
-                      'note',
-                      pl.note ?? '-',
-                      plProv,
-                      editValue: pl.note ?? '',
-                      style: const TextStyle(
-                        fontSize: 11,
-                        color: AppTheme.inkSoft,
-                      ),
-                    ),
-                  ),
-                  SizedBox(
-                    width: 40,
-                    child: IconButton(
-                      icon: const Icon(
-                        Icons.delete_outline,
-                        size: 16,
-                        color: AppTheme.debt,
-                      ),
-                      visualDensity: VisualDensity.compact,
-                      padding: EdgeInsets.zero,
-                      onPressed: () => plProv.deleteEntry(pl.id!),
-                    ),
-                  ),
-                ],
-              ),
-            );
-          }),
-        ],
-      ),
+      child: tableContent,
     );
   }
 }

@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
@@ -37,6 +38,20 @@ class BackupProvider extends ChangeNotifier {
   String get effectiveBackupFolder {
     if (_destinationPath.trim().isEmpty) return '';
     return p.join(_destinationPath.trim(), _safeDeviceName);
+  }
+
+  bool get _isSafDestination =>
+      _destinationPath.trim().startsWith('content://');
+
+  bool get isSafDestination => _isSafDestination;
+
+  bool get hasDestination => _isSafDestination || effectiveBackupFolder.isNotEmpty;
+
+  String get destinationDisplay {
+    final d = _destinationPath.trim();
+    if (d.isEmpty) return '';
+    if (_isSafDestination) return 'Google Drive / folder tersambung (SAF)';
+    return d;
   }
 
   void _safeNotify() {
@@ -155,20 +170,33 @@ class BackupProvider extends ChangeNotifier {
   /// Cek apakah backup hari ini sudah ada; jika belum, buat backup baru.
   Future<bool> runBackupIfDue() async {
     if (!_enabled) return false;
-    final folder = effectiveBackupFolder;
-    if (folder.isEmpty) return false;
+    if (!hasDestination) return false;
     final today = _todayStamp();
-    if (File(p.join(folder, _backupFileName(today))).existsSync()) {
-      _lastBackupDate = today;
-      return true;
+    final fileName = _backupFileName(today);
+    if (_isSafDestination) {
+      if (await _safFileExists(fileName)) {
+        _lastBackupDate = today;
+        return true;
+      }
+    } else {
+      final folder = effectiveBackupFolder;
+      if (File(p.join(folder, fileName)).existsSync()) {
+        _lastBackupDate = today;
+        return true;
+      }
     }
     return await backupNow();
   }
 
   /// Selalu membuat salinan baru (menimpa file backup hari ini jika ada).
   Future<bool> backupNow() async {
-    if (effectiveBackupFolder.isEmpty) {
+    if (!hasDestination) {
       _lastStatus = 'Pilih folder tujuan backup dulu';
+      _safeNotify();
+      return false;
+    }
+    if (!_isSafDestination && !await _hasAllFilesAccess()) {
+      _lastStatus = 'Backup gagal: aktifkan Akses Semua File di Pengaturan HP dulu';
       _safeNotify();
       return false;
     }
@@ -176,20 +204,26 @@ class BackupProvider extends ChangeNotifier {
     _lastStatus = 'Menyimpan backup...';
     _safeNotify();
     try {
-      final folder = effectiveBackupFolder;
-      Directory(folder).createSync(recursive: true);
-      if (!Directory(folder).existsSync()) {
-        throw Exception('Folder tujuan tidak ditemukan');
-      }
       final today = _todayStamp();
-      final dest = p.join(folder, _backupFileName(today));
-      await DatabaseHelper.instance.exportDatabase(dest);
+      final fileName = _backupFileName(today);
+      if (_isSafDestination) {
+        final bytes = await DatabaseHelper.instance.exportDatabaseBytes();
+        await _writeSafFile(fileName, bytes);
+      } else {
+        final folder = effectiveBackupFolder;
+        Directory(folder).createSync(recursive: true);
+        if (!Directory(folder).existsSync()) {
+          throw Exception('Folder tujuan tidak ditemukan');
+        }
+        final dest = p.join(folder, fileName);
+        await DatabaseHelper.instance.exportDatabase(dest);
+      }
       _lastBackupDate = today;
       _lastStatus = 'Backup berhasil ke folder $_safeDeviceName ($today)';
       _isBackingUp = false;
       _safeNotify();
       _saveSettings();
-      await cleanupOldBackups();
+      if (!_isSafDestination) await cleanupOldBackups();
       return true;
     } catch (e) {
       try {
@@ -205,18 +239,25 @@ class BackupProvider extends ChangeNotifier {
   /// Backup cepat saat aplikasi ditutup — menimpa backup hari ini dengan data
   /// terakhir tanpa membuka ulang database. Mengikuti switch utama backup.
   Future<bool> backupOnClose() async {
-    if (!_enabled || effectiveBackupFolder.isEmpty) return false;
+    if (!_enabled || !hasDestination) return false;
     if (_isBackingUp) return false;
+    if (!_isSafDestination && !await _hasAllFilesAccess()) return false;
     _isBackingUp = true;
     try {
-      final folder = effectiveBackupFolder;
-      Directory(folder).createSync(recursive: true);
-      if (!Directory(folder).existsSync()) {
-        throw Exception('Folder tujuan tidak ditemukan');
-      }
       final today = _todayStamp();
-      final dest = p.join(folder, _backupFileName(today));
-      await DatabaseHelper.instance.shutdownExport(dest);
+      final fileName = _backupFileName(today);
+      if (_isSafDestination) {
+        final bytes = await DatabaseHelper.instance.exportDatabaseBytes();
+        await _writeSafFile(fileName, bytes);
+      } else {
+        final folder = effectiveBackupFolder;
+        Directory(folder).createSync(recursive: true);
+        if (!Directory(folder).existsSync()) {
+          throw Exception('Folder tujuan tidak ditemukan');
+        }
+        final dest = p.join(folder, fileName);
+        await DatabaseHelper.instance.shutdownExport(dest);
+      }
       _lastBackupDate = today;
       _lastStatus = 'Backup saat menutup aplikasi berhasil ($today)';
       await _saveSettings();
@@ -228,6 +269,64 @@ class BackupProvider extends ChangeNotifier {
     } finally {
       _isBackingUp = false;
     }
+  }
+
+  Future<bool> _hasAllFilesAccess() async {
+    if (!Platform.isAndroid) return true;
+    try {
+      const channel = MethodChannel('pos_krupuk/storage');
+      final ok = await channel.invokeMethod<bool>('hasAllFilesAccess');
+      return ok ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> hasAllFilesAccess() => _hasAllFilesAccess();
+
+  Future<bool> requestAllFilesAccess() async {
+    try {
+      const channel = MethodChannel('pos_krupuk/storage');
+      await channel.invokeMethod<void>('requestAllFilesAccess');
+      return await _hasAllFilesAccess();
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Buka picker folder Android (SAF) agar bisa memilih Google Drive dll.
+  Future<String?> pickSafDirectory() async {
+    try {
+      const channel = MethodChannel('pos_krupuk/storage');
+      return await channel.invokeMethod<String?>('pickSafDirectory');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<bool> _safFileExists(String fileName) async {
+    try {
+      const channel = MethodChannel('pos_krupuk/storage');
+      final ok = await channel.invokeMethod<bool>('safFileExists', {
+        'treeUri': _destinationPath.trim(),
+        'subDir': _safeDeviceName,
+        'fileName': fileName,
+      });
+      return ok ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _writeSafFile(String fileName, Uint8List bytes) async {
+    const channel = MethodChannel('pos_krupuk/storage');
+    final ok = await channel.invokeMethod<bool>('writeSafFile', {
+      'treeUri': _destinationPath.trim(),
+      'subDir': _safeDeviceName,
+      'fileName': fileName,
+      'bytes': bytes,
+    });
+    if (ok != true) throw Exception('Gagal menulis ke folder terpilih');
   }
 
   /// Hapus file backup yang lebih lama dari [retentionDays].

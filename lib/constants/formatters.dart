@@ -186,6 +186,16 @@ String fmtDateShort(String? dateStr) {
   }
 }
 
+String fmtDateCompact(String? dateStr) {
+  if (dateStr == null || dateStr.isEmpty) return '-';
+  try {
+    final date = DateTime.parse(dateStr);
+    return '${date.day}/${date.month}/${date.year.toString().substring(2)}';
+  } catch (_) {
+    return dateStr;
+  }
+}
+
 int roundTotal(int total) {
   final thousands = total ~/ 1000 * 1000;
   final remainder = total - thousands;

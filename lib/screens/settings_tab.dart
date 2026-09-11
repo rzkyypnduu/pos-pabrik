@@ -591,17 +591,17 @@ class _SettingsTabState extends State<SettingsTab> {
                     border: Border.all(color: AppTheme.line),
                   ),
                   child: Text(
-                    prov.destinationPath.isNotEmpty
-                        ? prov.destinationPath
+                    prov.destinationDisplay.isNotEmpty
+                        ? prov.destinationDisplay
                         : 'Belum ada folder dipilih',
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       fontSize: 12.5,
-                      color: prov.destinationPath.isNotEmpty
+                      color: prov.destinationDisplay.isNotEmpty
                           ? AppTheme.ink
                           : AppTheme.inkSoft,
-                      fontWeight: prov.destinationPath.isNotEmpty
+                      fontWeight: prov.destinationDisplay.isNotEmpty
                           ? FontWeight.w500
                           : FontWeight.w400,
                     ),
@@ -616,10 +616,12 @@ class _SettingsTabState extends State<SettingsTab> {
               ),
             ],
           ),
-          if (prov.destinationPath.isNotEmpty) ...[
+          if (prov.destinationDisplay.isNotEmpty) ...[
             const SizedBox(height: 6),
             Text(
-              'Akan disimpan di: ${prov.effectiveBackupFolder}',
+              prov.isSafDestination
+                  ? 'Akan disimpan ke folder yang dipilih di Google Drive'
+                  : 'Akan disimpan di: ${prov.effectiveBackupFolder}',
               style: const TextStyle(fontSize: 11.5, color: AppTheme.inkSoft),
             ),
             const SizedBox(height: 6),
@@ -636,7 +638,7 @@ class _SettingsTabState extends State<SettingsTab> {
                   width: isMobile ? double.infinity : null,
                   child: OutlinedButton.icon(
                     onPressed:
-                        prov.isBackingUp || prov.effectiveBackupFolder.isEmpty
+                        prov.isBackingUp || !prov.hasDestination
                         ? null
                         : () => _backupNow(context),
                     icon: prov.isBackingUp
@@ -677,9 +679,14 @@ class _SettingsTabState extends State<SettingsTab> {
 
   Future<void> _pickBackupFolder(BuildContext context) async {
     final prov = context.read<BackupProvider>();
-    final path = await FilePicker.platform.getDirectoryPath(
-      dialogTitle: 'Pilih Folder Tujuan Backup',
-    );
+    String? path;
+    if (Platform.isAndroid) {
+      path = await prov.pickSafDirectory();
+    } else {
+      path = await FilePicker.platform.getDirectoryPath(
+        dialogTitle: 'Pilih Folder Tujuan Backup',
+      );
+    }
     if (path == null) return;
     prov.destinationPath = path;
     if (!context.mounted) return;
@@ -693,6 +700,14 @@ class _SettingsTabState extends State<SettingsTab> {
 
   Future<void> _backupNow(BuildContext context) async {
     final prov = context.read<BackupProvider>();
+    final needsAccess =
+        Platform.isAndroid && !prov.isSafDestination && await prov.hasAllFilesAccess() == false;
+    if (!context.mounted) return;
+    if (needsAccess) {
+      final granted = await _ensureAllFilesAccess(context);
+      if (!context.mounted) return;
+      if (!granted) return;
+    }
     final ok = await prov.backupNow();
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -703,6 +718,38 @@ class _SettingsTabState extends State<SettingsTab> {
     );
   }
 
+  Future<bool> _ensureAllFilesAccess(BuildContext context) async {
+    final prov = context.read<BackupProvider>();
+    if (Platform.isAndroid && await prov.hasAllFilesAccess()) return true;
+    if (!context.mounted) return false;
+    final goSettings = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Akses Semua File'),
+        content: const Text(
+          'Android memblokir aplikasi menulis ke folder ini. '
+          'Izinkan "Akses semua file" untuk aplikasi ini di Pengaturan HP '
+          'agar backup bisa tersimpan.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Nanti'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Buka Pengaturan'),
+          ),
+        ],
+      ),
+    );
+    if (goSettings != true) return false;
+    if (!context.mounted) return false;
+    await prov.requestAllFilesAccess();
+    return await prov.hasAllFilesAccess();
+  }
+
   Future<void> _exportData(BuildContext context) async {
     try {
       final defaultName =
@@ -710,8 +757,6 @@ class _SettingsTabState extends State<SettingsTab> {
       final result = await FilePicker.platform.saveFile(
         dialogTitle: 'Simpan Cadangan Database',
         fileName: defaultName,
-        type: FileType.custom,
-        allowedExtensions: ['db'],
       );
       if (result == null) return;
       await DatabaseHelper.instance.exportDatabase(result);
@@ -737,12 +782,22 @@ class _SettingsTabState extends State<SettingsTab> {
     try {
       final result = await FilePicker.platform.pickFiles(
         dialogTitle: 'Pilih File Cadangan Database',
-        type: FileType.custom,
-        allowedExtensions: ['db'],
       );
       if (result == null || result.files.single.path == null) return;
+      final picked = result.files.single;
+      final name = picked.name.toLowerCase();
+      if (!name.endsWith('.db')) {
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('File harus berekstensi .db'),
+            backgroundColor: AppTheme.debt,
+          ),
+        );
+        return;
+      }
       if (!context.mounted) return;
-      final src = result.files.single.path!;
+      final src = picked.path!;
       final confirmed = await showDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(

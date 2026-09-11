@@ -7,8 +7,8 @@ class AppTheme {
   static const Color surface = Colors.white;
   static const Color ink = Color(0xFF1E293B);
   static const Color inkSoft = Color(0xFF64748B);
-  static const Color accent = Color(0xFF2563EB);
-  static const Color accentDark = Color(0xFF1D4ED8);
+  static const Color accent = Color(0xFFAD0210);
+  static const Color accentDark = Color(0xFF8E000C);
   static const Color line = Color(0xFFE2E8F0);
   static const Color debt = Color(0xFFDC2626);
   static const Color debtBg = Color(0xFFFEE2E2);
@@ -17,8 +17,8 @@ class AppTheme {
   static const Color lunas = Color(0xFF2563EB);
   static const Color lunasBg = Color(0xFFDBEAFE);
   static const Color cardBg = Colors.white;
-  static const Color sidebarBg = Color(0xFF1E293B);
-  static const Color sidebarActive = Color(0xFF3B82F6);
+  static const Color sidebarBg = Color(0xFF6B000A);
+  static const Color sidebarActive = Color(0xFFF0444F);
 
   static ThemeData get theme => ThemeData(
     useMaterial3: true,
