@@ -22,6 +22,7 @@ import '../providers/customer_ledger_provider.dart';
 import '../providers/personal_ledger_provider.dart';
 import '../providers/saldo_deduction_provider.dart';
 import '../providers/ringkasan_provider.dart';
+import '../providers/sync_provider.dart';
 
 class SettingsTab extends StatefulWidget {
   const SettingsTab({super.key});
@@ -37,6 +38,8 @@ class _SettingsTabState extends State<SettingsTab> {
   late TextEditingController _sloganCtrl;
   late TextEditingController _footerCtrl;
   late final TextEditingController _deviceNameCtrl;
+  late final TextEditingController _syncUrlCtrl;
+  late final TextEditingController _syncKeyCtrl;
   final _deviceNameFocus = FocusNode();
   final _picker = ImagePicker();
   bool _loaded = false;
@@ -53,6 +56,9 @@ class _SettingsTabState extends State<SettingsTab> {
     _deviceNameCtrl = TextEditingController(
       text: context.read<BackupProvider>().deviceName,
     );
+    final syncProv = context.read<SyncProvider>();
+    _syncUrlCtrl = TextEditingController(text: syncProv.url ?? '');
+    _syncKeyCtrl = TextEditingController(text: syncProv.anonKey ?? '');
   }
 
   void _syncFromProvider(PrinterProvider prov) {
@@ -74,6 +80,8 @@ class _SettingsTabState extends State<SettingsTab> {
     _sloganCtrl.dispose();
     _footerCtrl.dispose();
     _deviceNameCtrl.dispose();
+    _syncUrlCtrl.dispose();
+    _syncKeyCtrl.dispose();
     _deviceNameFocus.dispose();
     super.dispose();
   }
@@ -103,6 +111,11 @@ class _SettingsTabState extends State<SettingsTab> {
           _sectionHeader('BACKUP OTOMATIS'),
           const SizedBox(height: 10),
           _backupCard(context, isMobile),
+          const SizedBox(height: 20),
+
+          _sectionHeader('SINKRONISASI'),
+          const SizedBox(height: 10),
+          _syncCard(context, isMobile),
           const SizedBox(height: 20),
 
           _sectionHeader('DATA'),
@@ -528,6 +541,185 @@ class _SettingsTabState extends State<SettingsTab> {
         ],
       ),
     );
+  }
+
+  Widget _syncCard(BuildContext context, bool isMobile) {
+    final prov = context.watch<SyncProvider>();
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.line, width: 1.5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SwitchListTile(
+            title: const Text(
+              'Aktifkan Sinkronisasi Cloud',
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+            ),
+            subtitle: const Text(
+              'Sinkronkan data antar HP secara real-time via Supabase',
+              style: TextStyle(fontSize: 12),
+            ),
+            value: prov.enabled,
+            onChanged: (v) => _saveSyncConfig(context, enabled: v),
+            activeThumbColor: AppTheme.accent,
+            contentPadding: EdgeInsets.zero,
+          ),
+          TextField(
+            controller: _syncUrlCtrl,
+            decoration: const InputDecoration(
+              labelText: 'Project URL',
+              labelStyle: TextStyle(fontSize: 13),
+              prefixIcon: Icon(Icons.cloud, size: 18),
+              isDense: true,
+              contentPadding: EdgeInsets.symmetric(
+                horizontal: 14,
+                vertical: 12,
+              ),
+            ),
+            style: const TextStyle(fontSize: 14),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _syncKeyCtrl,
+            decoration: const InputDecoration(
+              labelText: 'Anon Public Key',
+              labelStyle: TextStyle(fontSize: 13),
+              prefixIcon: Icon(Icons.key, size: 18),
+              isDense: true,
+              contentPadding: EdgeInsets.symmetric(
+                horizontal: 14,
+                vertical: 12,
+              ),
+            ),
+            style: const TextStyle(fontSize: 14),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: SizedBox(
+                  width: isMobile ? double.infinity : null,
+                  child: OutlinedButton.icon(
+                    onPressed: prov.busy || !prov.enabled
+                        ? null
+                        : () => _syncNow(context),
+                    icon: prov.busy
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.sync, size: 18),
+                    label: Text(
+                      prov.busy ? 'Menyinkronkan...' : 'Sinkron Sekarang',
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppTheme.accent,
+                      side: const BorderSide(color: AppTheme.accent),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              OutlinedButton.icon(
+                onPressed: () => _testSyncConnection(context),
+                icon: const Icon(Icons.wifi_tethering, size: 18),
+                label: const Text('Uji Koneksi'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            prov.enabled
+                ? (prov.pendingCount > 0
+                    ? 'Antrian: ${prov.pendingCount} perubahan belum terkirim'
+                    : 'Tersinkron${prov.lastSyncedAt != null ? ' • terakhir ${_timeAgo(prov.lastSyncedAt!)}' : ''}')
+                : 'Sinkronisasi nonaktif.',
+            style: const TextStyle(fontSize: 12, color: AppTheme.inkSoft),
+          ),
+          if (prov.lastError != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              prov.lastError!,
+              style: const TextStyle(fontSize: 12, color: AppTheme.accent),
+            ),
+          ],
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              'Semua HP harus memakai Project URL & Anon Key yang sama.\n'
+              'Catatan: dibutuhkan koneksi internet untuk sinkronisasi.',
+              style: const TextStyle(fontSize: 11.5, color: AppTheme.inkSoft),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _saveSyncConfig(BuildContext context, {required bool enabled}) async {
+    await context.read<SyncProvider>().saveConfig(
+      url: _syncUrlCtrl.text,
+      anonKey: _syncKeyCtrl.text,
+      enabled: enabled,
+    );
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          enabled && _syncUrlCtrl.text.trim().isEmpty
+              ? 'Aktifkan sinkronisasi: isi Project URL & Anon Key di atas'
+              : enabled
+              ? 'Sinkronisasi diaktifkan'
+              : 'Sinkronisasi dinonaktifkan',
+        ),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Future<void> _syncNow(BuildContext context) async {
+    final prov = context.read<SyncProvider>();
+    await prov.pullAll();
+    await prov.push();
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Sinkronisasi selesai'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Future<void> _testSyncConnection(BuildContext context) async {
+    final prov = context.read<SyncProvider>();
+    final ok = await prov.testConnection();
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(ok ? 'Koneksi berhasil' : 'Koneksi gagal: ${prov.lastError ?? ''}'),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  String _timeAgo(DateTime t) {
+    final d = DateTime.now().difference(t);
+    if (d.inMinutes < 1) return 'baru saja';
+    if (d.inMinutes < 60) return '${d.inMinutes} menit lalu';
+    final hours = d.inHours;
+    if (hours < 24) return '$hours jam lalu';
+    return '${d.inDays} hari lalu';
   }
 
   Widget _backupCard(BuildContext context, bool isMobile) {

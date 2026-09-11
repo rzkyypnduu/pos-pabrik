@@ -20,6 +20,7 @@ import 'providers/saldo_deduction_provider.dart';
 import 'providers/ringkasan_provider.dart';
 import 'providers/printer_provider.dart';
 import 'providers/backup_provider.dart';
+import 'providers/sync_provider.dart';
 import 'screens/pos_screen.dart';
 
 void main() async {
@@ -30,6 +31,9 @@ void main() async {
 
   final backupProvider = BackupProvider();
   await backupProvider.loadSavedSettings();
+
+  final syncProvider = SyncProvider();
+  await syncProvider.loadConfig();
 
   if (Platform.isWindows) {
     await windowManager.ensureInitialized();
@@ -68,13 +72,21 @@ void main() async {
     );
   }
 
-  runApp(PosKrupukApp(backupProvider: backupProvider));
+  runApp(PosKrupukApp(
+    backupProvider: backupProvider,
+    syncProvider: syncProvider,
+  ));
 }
 
 class PosKrupukApp extends StatelessWidget {
-  const PosKrupukApp({super.key, required this.backupProvider});
+  const PosKrupukApp({
+    super.key,
+    required this.backupProvider,
+    required this.syncProvider,
+  });
 
   final BackupProvider backupProvider;
+  final SyncProvider syncProvider;
 
   @override
   Widget build(BuildContext context) {
@@ -93,6 +105,7 @@ class PosKrupukApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => RingkasanProvider()),
         ChangeNotifierProvider(create: (_) => PrinterProvider()),
         ChangeNotifierProvider(create: (_) => backupProvider),
+        ChangeNotifierProvider(create: (_) => syncProvider),
       ],
       child: MaterialApp(
         title: 'POS Krupuk',

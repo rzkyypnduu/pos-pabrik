@@ -131,15 +131,56 @@ class DatabaseHelper {
     String rowUuid,
   ) async {
     final db = await database;
-    final payload = Map<String, dynamic>.from(row);
-    payload.remove('id');
-    payload['uuid'] = rowUuid;
+    final payload = await _remotePayloadFor(table, row);
+    payload['id'] = rowUuid;
     await db.insert('outbox', {
       'table_name': table,
       'operation': operation,
       'payload': jsonEncode(payload),
       'created_at': _now(),
     });
+  }
+
+  /// Ubah baris lokal menjadi payload siap-upload (kolom remote):
+  /// buang id lokal/created_at/updated_at, ganti FK int -> uuid.
+  Future<Map<String, dynamic>> _remotePayloadFor(
+    String table,
+    Map<String, dynamic> row,
+  ) async {
+    final p = Map<String, dynamic>.from(row);
+    p.remove('id');
+    p.remove('created_at');
+    p.remove('updated_at');
+    p.remove('deleted_at');
+    p.remove('uuid');
+    if (table == 'sale_items') {
+      final sid = p.remove('sale_id');
+      if (sid != null && sid is int) {
+        final rows = await database.then(
+          (d) => d.query('sales', columns: ['uuid'], where: 'id = ?', whereArgs: [sid]),
+        );
+        final saleUuid = rows.isEmpty ? null : rows.first['uuid'] as String?;
+        p['sale_id'] = saleUuid;
+      }
+      final pid = p.remove('product_id');
+      if (pid != null && pid is int) {
+        final rows = await database.then(
+          (d) => d.query('products', columns: ['uuid'], where: 'id = ?', whereArgs: [pid]),
+        );
+        final productUuid = rows.isEmpty ? null : rows.first['uuid'] as String?;
+        p['product_id'] = productUuid;
+      }
+    } else if (table == 'customer_ledgers') {
+      final sid = p.remove('sale_id');
+      if (sid != null && sid is int) {
+        final rows = await database.then(
+          (d) => d.query('sales', columns: ['uuid'], where: 'id = ?', whereArgs: [sid]),
+        );
+        final saleUuid = rows.isEmpty ? null : rows.first['uuid'] as String?;
+        p['sale_id'] = saleUuid;
+      }
+    }
+    return p;
   }
 
   Future<String?> _uuidOf(String table, int id) async {
@@ -231,6 +272,87 @@ class DatabaseHelper {
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
   }
+
+  // ==================== APPLY REMOTE (tidak mengisi outbox) ====================
+
+  Future<int?> _localIdByUuid(String table, String uuid) async {
+    final db = await database;
+    final rows = await db.query(
+      table,
+      columns: ['id'],
+      where: 'uuid = ?',
+      whereArgs: [uuid],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : rows.first['id'] as int?;
+  }
+
+  Future<int?> _localSaleIdByUuid(String uuid) =>
+      _localIdByUuid('sales', uuid);
+
+  Future<int?> _localProductIdByUuid(String uuid) =>
+      _localIdByUuid('products', uuid);
+
+  /// Terapkan baris remote ke tabel lokal. `payload` memakai kolom remote:
+  /// `id` = uuid, kolom FK (sale_id/product_id) berisi uuid. TIDAK menulis outbox.
+  Future<void> applyRemoteRow(
+    String table,
+    Map<String, dynamic> payload,
+  ) async {
+    final db = await database;
+    final uuid = payload['id'] as String?;
+    if (uuid == null) return;
+
+    final row = Map<String, dynamic>.from(payload);
+    row.remove('id');
+    row['uuid'] = uuid;
+
+    if (table == 'sale_items') {
+      final saleUuid = row.remove('sale_id') as String?;
+      if (saleUuid != null && saleUuid.isNotEmpty) {
+        final saleId = await _localSaleIdByUuid(saleUuid);
+        if (saleId == null) {
+          // Induk belum ada lokal -> tunggu diproses lagi nanti (parent dulu).
+          return;
+        }
+        row['sale_id'] = saleId;
+      }
+      final productUuid = row.remove('product_id') as String?;
+      if (productUuid != null && productUuid.isNotEmpty) {
+        final productId = await _localProductIdByUuid(productUuid);
+        if (productId != null) row['product_id'] = productId;
+      }
+    } else if (table == 'customer_ledgers') {
+      final saleUuid = row.remove('sale_id') as String?;
+      if (saleUuid != null && saleUuid.isNotEmpty) {
+        final saleId = await _localSaleIdByUuid(saleUuid);
+        if (saleId == null) return;
+        row['sale_id'] = saleId;
+      }
+    }
+
+    row.remove('updated_at');
+    row.remove('deleted_at');
+    row.remove('updated_by');
+    row['updated_at'] = _now();
+
+    final existingId = await _localIdByUuid(table, uuid);
+    if (existingId != null) {
+      row.remove('created_at');
+      row['id'] = existingId;
+      await db.update(table, row, where: 'id = ?', whereArgs: [existingId]);
+    } else {
+      await db.insert(table, row);
+    }
+  }
+
+  Future<void> applyRemoteDelete(String table, String uuid) async {
+    final db = await database;
+    await db.delete(table, where: 'uuid = ?', whereArgs: [uuid]);
+  }
+
+  @override
+  String toString() => 'DatabaseHelper';
 
   Future<void> _upgradeDB(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {

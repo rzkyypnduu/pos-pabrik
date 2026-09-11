@@ -5,6 +5,8 @@ import 'package:provider/provider.dart';
 import '../constants/app_theme.dart';
 import '../providers/tab_provider.dart';
 import '../providers/product_provider.dart';
+import '../providers/transaction_provider.dart';
+import '../providers/expense_provider.dart';
 import '../providers/customer_ledger_provider.dart';
 import '../providers/oil_stock_provider.dart';
 import '../providers/stock_management_provider.dart';
@@ -13,6 +15,7 @@ import '../providers/personal_ledger_provider.dart';
 import '../providers/saldo_deduction_provider.dart';
 import '../providers/printer_provider.dart';
 import '../providers/backup_provider.dart';
+import '../providers/sync_provider.dart';
 import '../widgets/app_sidebar.dart';
 import '../widgets/app_bottom_nav.dart';
 import '../widgets/window_controls.dart';
@@ -32,6 +35,7 @@ class PosScreen extends StatefulWidget {
 class _PosScreenState extends State<PosScreen> {
   final _zoomController = TransformationController();
   bool _isClampingZoom = false;
+  int _lastSyncRev = 0;
 
   void _onZoomChanged() {
     if (_isClampingZoom || !mounted) return;
@@ -90,6 +94,15 @@ class _PosScreenState extends State<PosScreen> {
   Widget build(BuildContext context) {
     final tabProv = context.watch<TabProvider>();
     final isCompact = AppTheme.isCompact(context);
+    final syncRev = context.select<SyncProvider, int>(
+      (s) => s.revision,
+    );
+    if (syncRev != _lastSyncRev) {
+      _lastSyncRev = syncRev;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _reloadTabData(tabProv.currentTab);
+      });
+    }
 
     final tabs = [
       const TransaksiTab(),
@@ -151,6 +164,8 @@ class _PosScreenState extends State<PosScreen> {
     switch (tabIndex) {
       case 0: // Transaksi
         context.read<CustomerLedgerProvider>().loadAll();
+        context.read<TransactionProvider>().loadDaySales(tabProv.selectedDate);
+        context.read<ExpenseProvider>().loadDayExpenses(tabProv.selectedDate);
         break;
       case 1: // Produk
         context.read<ProductProvider>().loadProducts();
