@@ -237,6 +237,31 @@ class DatabaseHelper {
     );
   }
 
+  /// Snapshot awal: enqueue SEMUA baris lokal ke outbox (parent dulu)
+  /// agar data lama (pra-sync) ikut ter-upload. Dijalankan satu kali.
+  Future<void> enqueueAllForSnapshot() async {
+    const tables = [
+      'products',
+      'sales',
+      'expenses',
+      'sale_items',
+      'customer_ledgers',
+      'oil_stocks',
+      'stock_managements',
+      'stock_remainings',
+      'personal_ledgers',
+      'saldo_deductions',
+    ];
+    final db = await database;
+    for (final table in tables) {
+      final rows = await db.query(table, columns: ['id']);
+      for (final r in rows) {
+        final id = r['id'];
+        if (id is int) await _enqueueRow(table, 'update', id);
+      }
+    }
+  }
+
   Future<void> setOutboxSynced(int id) async {
     final db = await database;
     await db.update(

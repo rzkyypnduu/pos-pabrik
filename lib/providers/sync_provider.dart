@@ -21,6 +21,7 @@ class SyncProvider extends ChangeNotifier {
   static const _keyUrl = 'supabase_url';
   static const _keyAnon = 'supabase_anon_key';
   static const _keyDeviceId = 'sync_device_id';
+  static const _keySnapshotDone = 'sync_snapshot_done';
 
   /// Urutan penting: tabel induk (products, sales, expenses) harus diproses
   /// lebih dulu agar FK sale_id/product_id pada child terselesaikan.
@@ -124,9 +125,17 @@ class SyncProvider extends ChangeNotifier {
     _pullTimer = Timer.periodic(const Duration(seconds: 8), (_) => pullAll());
     _subscribeRealtime();
     () async {
+      await _snapshotIfNeeded();
       await push();
       await pullAll();
     }();
+  }
+
+  Future<void> _snapshotIfNeeded() async {
+    if ((await _db.getSyncMeta(_keySnapshotDone)) == '1') return;
+    await _db.enqueueAllForSnapshot();
+    await _db.setSyncMeta(_keySnapshotDone, '1');
+    await _refreshPendingCount();
   }
 
   void _stopEngine() {
