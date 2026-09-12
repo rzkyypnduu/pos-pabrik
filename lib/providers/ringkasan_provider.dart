@@ -50,22 +50,19 @@ class RingkasanProvider extends ChangeNotifier {
     _activeMonth = activeMonth;
     final range = monthRange(activeMonth);
 
-    // Monthly totals
-    final oilStocks = await DatabaseHelper.instance.getOilStocksByMonth(
-      range[0],
-      range[1],
-    );
-    totalOil = oilStocks.fold<int>(0, (sum, o) => sum + o.subtotal);
-    totalOilKg = oilStocks.fold<double>(0, (sum, o) => sum + o.qty);
+    // Monthly totals — nilai TERAKHIR per slot (copy & putus: tiap hari punya
+    // salinan sendiri, jadi total memakai posisi terakhir agar tidak dobel).
+    final latestOil = await DatabaseHelper.instance
+        .getLatestOilStockByMonth(range[0], range[1]);
+    totalOil = latestOil?.subtotal ?? 0;
+    totalOilKg = latestOil?.qty ?? 0;
 
-    final stockMgmts = await DatabaseHelper.instance.getStockManagementsByMonth(
-      range[0],
-      range[1],
-    );
+    final stockMgmts = await DatabaseHelper.instance
+        .getLatestStockManagementsByMonth(range[0], range[1]);
     totalStockMgmt = stockMgmts.fold<int>(0, (sum, s) => sum + s.subtotal);
 
     final stockRemains = await DatabaseHelper.instance
-        .getStockRemainingsByMonth(range[0], range[1]);
+        .getLatestStockRemainingsByMonth(range[0], range[1]);
     totalRemain = stockRemains.fold<int>(0, (sum, s) => sum + s.subtotal);
 
     totalHutangPel = customerBalances.entries.fold<int>(
@@ -74,42 +71,34 @@ class RingkasanProvider extends ChangeNotifier {
     );
 
     final personalLedgers = await DatabaseHelper.instance
-        .getPersonalLedgersByMonth(range[0], range[1]);
+        .getLatestPersonalLedgersByMonth(range[0], range[1]);
     totalHutangPri = personalLedgers.fold<int>(0, (sum, l) => sum + l.amount);
 
-    final saldoLogs = await DatabaseHelper.instance.getSaldoDeductionsByMonth(
-      range[0],
-      range[1],
-    );
-    totalSaldo = saldoLogs.fold<double>(0, (sum, s) => sum + s.result);
+    final saldoLog = await DatabaseHelper.instance
+        .getLatestSaldoDeductionByMonth(range[0], range[1]);
+    totalSaldo = saldoLog?.result ?? 0;
 
     grand = totalOil + totalStockMgmt + totalRemain + totalHutangPel;
 
     // Daily totals — cumulative from start of month up to selectedDate
     if (selectedDate.startsWith(activeMonth)) {
-      final dayOil = await DatabaseHelper.instance.getOilStocksByMonth(
-        range[0],
-        selectedDate,
-      );
+      final dayOil = await DatabaseHelper.instance
+          .getLatestOilStockByMonth(range[0], selectedDate);
       final dayStockMgmt = await DatabaseHelper.instance
-          .getStockManagementsByMonth(range[0], selectedDate);
-      final dayRemain = await DatabaseHelper.instance.getStockRemainingsByMonth(
-        range[0],
-        selectedDate,
-      );
+          .getLatestStockManagementsByMonth(range[0], selectedDate);
+      final dayRemain = await DatabaseHelper.instance
+          .getLatestStockRemainingsByMonth(range[0], selectedDate);
       final dayLedger = await DatabaseHelper.instance.getCustomerLedgersByMonth(
         range[0],
         selectedDate,
       );
       final dayPersonal = await DatabaseHelper.instance
-          .getPersonalLedgersByMonth(range[0], selectedDate);
-      final daySaldo = await DatabaseHelper.instance.getSaldoDeductionsByMonth(
-        range[0],
-        selectedDate,
-      );
+          .getLatestPersonalLedgersByMonth(range[0], selectedDate);
+      final daySaldo = await DatabaseHelper.instance
+          .getLatestSaldoDeductionByMonth(range[0], selectedDate);
 
       daily = {
-        'oil': dayOil.fold<int>(0, (sum, o) => sum + o.subtotal),
+        'oil': dayOil?.subtotal ?? 0,
         'stockMgmt': dayStockMgmt.fold<int>(0, (sum, s) => sum + s.subtotal),
         'remain': dayRemain.fold<int>(0, (sum, s) => sum + s.subtotal),
         'hutangPel': dayLedger.fold<int>(
@@ -117,7 +106,7 @@ class RingkasanProvider extends ChangeNotifier {
           (sum, l) => sum + (l.type == 'tambah' ? l.amount : -l.amount),
         ),
         'hutangPri': dayPersonal.fold<int>(0, (sum, l) => sum + l.amount),
-        'saldo': daySaldo.fold<double>(0, (sum, s) => sum + s.result),
+        'saldo': daySaldo?.result ?? 0,
       };
     } else {
       daily = null;

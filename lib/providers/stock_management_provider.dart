@@ -7,6 +7,7 @@ class StockManagementProvider extends ChangeNotifier {
   List<StockManagement> _monthStocks = [];
   List<StockManagement> _dayStocks = [];
   List<StockManagement> _currentDateStocks = [];
+  List<StockManagement> _monthTotalRecords = [];
   bool _isCarryForward = false;
   String _activeMonth = '';
 
@@ -15,7 +16,8 @@ class StockManagementProvider extends ChangeNotifier {
   List<StockManagement> get currentDateStocks => _currentDateStocks;
   bool get isCarryForward => _isCarryForward;
 
-  int get monthTotal => _monthStocks.fold<int>(0, (sum, s) => sum + s.subtotal);
+  int get monthTotal =>
+      _monthTotalRecords.fold<int>(0, (sum, s) => sum + s.subtotal);
   int get dayTotal => _dayStocks.fold<int>(0, (sum, s) => sum + s.subtotal);
 
   List<String> get holderNames {
@@ -26,6 +28,8 @@ class StockManagementProvider extends ChangeNotifier {
     _activeMonth = activeMonth;
     final range = monthRange(activeMonth);
     _monthStocks = await DatabaseHelper.instance.getStockManagementsByMonth(range[0], range[1]);
+    _monthTotalRecords = await DatabaseHelper.instance
+        .getLatestStockManagementsByMonth(range[0], range[1]);
     await _healDuplicateBatchIds(_monthStocks);
     notifyListeners();
   }
@@ -37,15 +41,10 @@ class StockManagementProvider extends ChangeNotifier {
   }
 
   Future<void> loadForDate(String date) async {
-    final dayStocks = await DatabaseHelper.instance.getStockManagementsByDate(date);
-    if (dayStocks.isNotEmpty) {
-      _currentDateStocks = dayStocks;
-      _isCarryForward = false;
-    } else {
-      final latest = await DatabaseHelper.instance.getLatestStockManagements(date);
-      _currentDateStocks = latest;
-      _isCarryForward = latest.isNotEmpty;
-    }
+    _currentDateStocks =
+        await DatabaseHelper.instance.materializeStockManagements(date);
+    _isCarryForward = false;
+    await _reloadMonth();
     await _healDuplicateBatchIds(_currentDateStocks);
     notifyListeners();
   }
@@ -95,9 +94,16 @@ class StockManagementProvider extends ChangeNotifier {
   }
 
   Future<void> addStockMgmt(String date, String name, int price, List<double> sacks) async {
-    final existing = _monthStocks.where(
-      (s) => s.name.toLowerCase() == name.toLowerCase(),
-    ).firstOrNull;
+    StockManagement? existing;
+    for (final s in _monthStocks) {
+      if (s.name.toLowerCase() == name.toLowerCase() && s.date == date) {
+        existing = s;
+        break;
+      }
+    }
+    existing ??= _monthStocks
+        .where((s) => s.name.toLowerCase() == name.toLowerCase())
+        .firstOrNull;
 
     final newBatches = <Map<String, dynamic>>[
       for (int i = 0; i < sacks.length; i++)

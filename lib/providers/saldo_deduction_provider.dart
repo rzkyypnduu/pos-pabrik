@@ -6,29 +6,32 @@ import '../constants/formatters.dart';
 class SaldoDeductionProvider extends ChangeNotifier {
   List<SaldoDeduction> _monthLogs = [];
   SaldoDeduction? _currentDateLog;
+  SaldoDeduction? _monthTotalLog;
   bool _isCarryForward = false;
+  String _activeMonth = '';
 
   List<SaldoDeduction> get monthLogs => _monthLogs;
   SaldoDeduction? get currentDateLog => _currentDateLog;
   bool get isCarryForward => _isCarryForward;
 
-  double get monthTotal => _monthLogs.fold<double>(0, (sum, s) => sum + s.result);
+  double get monthTotal =>
+      _monthTotalLog?.result ??
+      _monthLogs.fold<double>(0, (sum, s) => sum + s.result);
 
   Future<void> loadMonth(String activeMonth) async {
+    _activeMonth = activeMonth;
     final range = monthRange(activeMonth);
     _monthLogs = await DatabaseHelper.instance.getSaldoDeductionsByMonth(range[0], range[1]);
+    _monthTotalLog = await DatabaseHelper.instance
+        .getLatestSaldoDeductionByMonth(range[0], range[1]);
     notifyListeners();
   }
 
   Future<void> loadForDate(String date) async {
-    final dayLogs = await DatabaseHelper.instance.getSaldoDeductionsByDate(date);
-    if (dayLogs.isNotEmpty) {
-      _currentDateLog = dayLogs.first;
-      _isCarryForward = false;
-    } else {
-      _currentDateLog = await DatabaseHelper.instance.getLatestSaldoDeduction(date);
-      _isCarryForward = _currentDateLog != null;
-    }
+    _currentDateLog =
+        await DatabaseHelper.instance.materializeSaldoDeduction(date);
+    _isCarryForward = false;
+    await loadMonth(_activeMonth);
     notifyListeners();
   }
 

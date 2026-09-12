@@ -6,6 +6,7 @@ import '../constants/formatters.dart';
 class PersonalLedgerProvider extends ChangeNotifier {
   List<PersonalLedger> _monthLedgers = [];
   List<PersonalLedger> _currentDateLedgers = [];
+  List<PersonalLedger> _monthTotalLedgers = [];
   bool _isCarryForward = false;
   String _activeMonth = '';
 
@@ -13,25 +14,23 @@ class PersonalLedgerProvider extends ChangeNotifier {
   List<PersonalLedger> get currentDateLedgers => _currentDateLedgers;
   bool get isCarryForward => _isCarryForward;
 
-  int get monthTotal => _monthLedgers.fold<int>(0, (sum, l) => sum + l.amount);
+  int get monthTotal =>
+      _monthTotalLedgers.fold<int>(0, (sum, l) => sum + l.amount);
 
   Future<void> loadMonth(String activeMonth) async {
     _activeMonth = activeMonth;
     final range = monthRange(activeMonth);
     _monthLedgers = await DatabaseHelper.instance.getPersonalLedgersByMonth(range[0], range[1]);
+    _monthTotalLedgers = await DatabaseHelper.instance
+        .getLatestPersonalLedgersByMonth(range[0], range[1]);
     notifyListeners();
   }
 
   Future<void> loadForDate(String date) async {
-    final dayLedgers = await DatabaseHelper.instance.getPersonalLedgersByDate(date);
-    if (dayLedgers.isNotEmpty) {
-      _currentDateLedgers = dayLedgers;
-      _isCarryForward = false;
-    } else {
-      final latest = await DatabaseHelper.instance.getLatestPersonalLedgers(date);
-      _currentDateLedgers = latest;
-      _isCarryForward = latest.isNotEmpty;
-    }
+    _currentDateLedgers =
+        await DatabaseHelper.instance.materializePersonalLedgers(date);
+    _isCarryForward = false;
+    await loadMonth(_activeMonth);
     notifyListeners();
   }
 

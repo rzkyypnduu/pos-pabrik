@@ -371,8 +371,43 @@ class DatabaseHelper {
       row['id'] = existingId;
       await db.update(table, row, where: 'id = ?', whereArgs: [existingId]);
     } else {
+      // Copy & putus: hindari duplikat salinan harian antar perangkat. Jika
+      // untuk slot (tanggal+[nama]) yang sama sudah ada baris lokal lain,
+      // baris remote ini dianggap salinan ganda dan dilewati.
+      if (await _hasSameDaySlot(table, row)) return;
       await db.insert(table, row);
     }
+  }
+
+  Future<bool> _hasSameDaySlot(String table, Map<String, dynamic> row) async {
+    final db = await database;
+    final date = row['date'] as String?;
+    if (date == null || date.isEmpty) return false;
+    if (table == 'oil_stocks' || table == 'saldo_deductions') {
+      final maps = await db.query(
+        table,
+        columns: ['id'],
+        where: 'date = ?',
+        whereArgs: [date],
+        limit: 1,
+      );
+      return maps.isNotEmpty;
+    }
+    if (table == 'stock_managements' ||
+        table == 'stock_remainings' ||
+        table == 'personal_ledgers') {
+      final name = row['name'] as String?;
+      if (name == null || name.isEmpty) return false;
+      final maps = await db.query(
+        table,
+        columns: ['id'],
+        where: 'date = ? AND name = ?',
+        whereArgs: [date, name],
+        limit: 1,
+      );
+      return maps.isNotEmpty;
+    }
+    return false;
   }
 
   Future<void> applyRemoteDelete(String table, String uuid) async {
@@ -858,6 +893,28 @@ class DatabaseHelper {
     return OilStock.fromMap(maps.first);
   }
 
+  /// Copy & putus minyak: jika [date] belum punya catatan, salin nilai hari
+  /// terakhir sebelumnya menjadi milik [date] (id baru).
+  Future<OilStock?> materializeOilStock(String date) async {
+    final existing = await getOilStocksByDate(date);
+    if (existing.isNotEmpty) return existing.first;
+    final latest = await getLatestOilStock(date);
+    if (latest == null) return null;
+    await insertOilStock(OilStock(date: date, qty: latest.qty, price: latest.price));
+    final rows = await getOilStocksByDate(date);
+    return rows.isNotEmpty ? rows.first : null;
+  }
+
+  /// Nilai minyak TERAKHIR dalam rentang bulan (untuk total ringkasan).
+  Future<OilStock?> getLatestOilStockByMonth(
+    String startDate,
+    String endDate,
+  ) async {
+    final all = await getOilStocksByMonth(startDate, endDate);
+    if (all.isEmpty) return null;
+    return all.reduce((a, b) => (a.date ?? '').compareTo(b.date ?? '') >= 0 ? a : b);
+  }
+
   Future<int> deleteOilStock(int id) async {
     final db = await database;
     await _enqueueDeleteById('oil_stocks', id);
@@ -932,6 +989,58 @@ class DatabaseHelper {
     return maps.map((m) => StockManagement.fromMap(m)).toList();
   }
 
+  /// Copy & putus stok pemegang: jika [date] belum punya catatan, salin
+  /// record terakhir tiap pemegang (dengan nilai sak-nya) menjadi milik [date]
+  /// dengan id record & id batch baru.
+  Future<List<StockManagement>> materializeStockManagements(String date) async {
+    final existing = await getStockManagementsByDate(date);
+    if (existing.isNotEmpty) return existing;
+    final latestAll = await getLatestStockManagements(date);
+    if (latestAll.isEmpty) return [];
+    final byName = <String, StockManagement>{};
+    for (final sm in latestAll) {
+      byName.putIfAbsent(sm.name, () => sm);
+    }
+    for (final src in byName.values) {
+      final srcBatches = src.batches ?? [];
+      final copiedBatches = <Map<String, dynamic>>[
+        for (int i = 0; i < srcBatches.length; i++)
+          {
+            'id': '${DateTime.now().microsecondsSinceEpoch}_$i',
+            'date': date,
+            'price': (srcBatches[i]['price'] as num?)?.toInt() ?? src.price,
+            'sacks': [
+              for (final s in ((srcBatches[i]['sacks'] as List?) ?? []))
+                (s as num).toDouble(),
+            ],
+          },
+      ];
+      await insertStockManagement(StockManagement(
+        date: date,
+        name: src.name,
+        price: src.price,
+        batches: copiedBatches,
+      ));
+    }
+    return getStockManagementsByDate(date);
+  }
+
+  /// Record stok pemegang TERAKHIR per nama dalam rentang bulan.
+  Future<List<StockManagement>> getLatestStockManagementsByMonth(
+    String startDate,
+    String endDate,
+  ) async {
+    final all = await getStockManagementsByMonth(startDate, endDate);
+    final byName = <String, StockManagement>{};
+    for (final sm in all) {
+      final cur = byName[sm.name];
+      if (cur == null || (sm.date ?? '').compareTo(cur.date ?? '') > 0) {
+        byName[sm.name] = sm;
+      }
+    }
+    return byName.values.toList();
+  }
+
   Future<int> deleteStockManagement(int id) async {
     final db = await database;
     await _enqueueDeleteById('stock_managements', id);
@@ -992,6 +1101,44 @@ class DatabaseHelper {
       orderBy: 'date DESC, id DESC',
     );
     return maps.map((m) => StockRemaining.fromMap(m)).toList();
+  }
+
+  /// Copy & putus sisa barang: jika [date] belum punya catatan, salin record
+  /// terakhir tiap nama barang menjadi milik [date] (id baru).
+  Future<List<StockRemaining>> materializeStockRemainings(String date) async {
+    final existing = await getStockRemainingsByDate(date);
+    if (existing.isNotEmpty) return existing;
+    final latestAll = await getLatestStockRemainings(date);
+    if (latestAll.isEmpty) return [];
+    final byName = <String, StockRemaining>{};
+    for (final sr in latestAll) {
+      byName.putIfAbsent(sr.name, () => sr);
+    }
+    for (final src in byName.values) {
+      await insertStockRemaining(StockRemaining(
+        date: date,
+        name: src.name,
+        qty: src.qty,
+        price: src.price,
+      ));
+    }
+    return getStockRemainingsByDate(date);
+  }
+
+  /// Record sisa barang TERAKHIR per nama dalam rentang bulan.
+  Future<List<StockRemaining>> getLatestStockRemainingsByMonth(
+    String startDate,
+    String endDate,
+  ) async {
+    final all = await getStockRemainingsByMonth(startDate, endDate);
+    final byName = <String, StockRemaining>{};
+    for (final sr in all) {
+      final cur = byName[sr.name];
+      if (cur == null || (sr.date ?? '').compareTo(cur.date ?? '') > 0) {
+        byName[sr.name] = sr;
+      }
+    }
+    return byName.values.toList();
   }
 
   Future<int> deleteStockRemaining(int id) async {
@@ -1161,6 +1308,44 @@ class DatabaseHelper {
     return maps.map((m) => PersonalLedger.fromMap(m)).toList();
   }
 
+  /// Copy & putus hutang pribadi: jika [date] belum punya catatan, salin
+  /// record terakhir tiap nama menjadi milik [date] (id baru).
+  Future<List<PersonalLedger>> materializePersonalLedgers(String date) async {
+    final existing = await getPersonalLedgersByDate(date);
+    if (existing.isNotEmpty) return existing;
+    final latestAll = await getLatestPersonalLedgers(date);
+    if (latestAll.isEmpty) return [];
+    final byName = <String, PersonalLedger>{};
+    for (final l in latestAll) {
+      byName.putIfAbsent(l.name, () => l);
+    }
+    for (final src in byName.values) {
+      await insertPersonalLedger(PersonalLedger(
+        date: date,
+        name: src.name,
+        amount: src.amount,
+        note: src.note,
+      ));
+    }
+    return getPersonalLedgersByDate(date);
+  }
+
+  /// Record hutang pribadi TERAKHIR per nama dalam rentang bulan.
+  Future<List<PersonalLedger>> getLatestPersonalLedgersByMonth(
+    String startDate,
+    String endDate,
+  ) async {
+    final all = await getPersonalLedgersByMonth(startDate, endDate);
+    final byName = <String, PersonalLedger>{};
+    for (final l in all) {
+      final cur = byName[l.name];
+      if (cur == null || (l.date).compareTo(cur.date) > 0) {
+        byName[l.name] = l;
+      }
+    }
+    return byName.values.toList();
+  }
+
   Future<int> deletePersonalLedger(int id) async {
     final db = await database;
     await _enqueueDeleteById('personal_ledgers', id);
@@ -1256,6 +1441,33 @@ class DatabaseHelper {
     );
     if (maps.isEmpty) return null;
     return SaldoDeduction.fromMap(maps.first);
+  }
+
+  /// Copy & putus pengurangan saldo: jika [date] belum punya catatan, salin
+  /// nilai terakhir sebelumnya menjadi milik [date] (id baru).
+  Future<SaldoDeduction?> materializeSaldoDeduction(String date) async {
+    final existing = await getSaldoDeductionsByDate(date);
+    if (existing.isNotEmpty) return existing.first;
+    final latest = await getLatestSaldoDeduction(date);
+    if (latest == null) return null;
+    await insertSaldoDeduction(SaldoDeduction(
+      date: date,
+      a: latest.a,
+      b: latest.b,
+      note: latest.note,
+    ));
+    final rows = await getSaldoDeductionsByDate(date);
+    return rows.isNotEmpty ? rows.first : null;
+  }
+
+  /// Nilai pengurangan saldo TERAKHIR dalam rentang bulan.
+  Future<SaldoDeduction?> getLatestSaldoDeductionByMonth(
+    String startDate,
+    String endDate,
+  ) async {
+    final all = await getSaldoDeductionsByMonth(startDate, endDate);
+    if (all.isEmpty) return null;
+    return all.reduce((a, b) => (a.date ?? '').compareTo(b.date ?? '') >= 0 ? a : b);
   }
 
   Future<int> deleteSaldoDeduction(int id) async {

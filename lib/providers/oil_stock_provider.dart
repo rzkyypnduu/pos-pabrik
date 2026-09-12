@@ -7,6 +7,7 @@ class OilStockProvider extends ChangeNotifier {
   List<OilStock> _monthStocks = [];
   List<OilStock> _dayStocks = [];
   OilStock? _currentDateStock;
+  OilStock? _monthTotalStocks;
   bool _isCarryForward = false;
   String _activeMonth = '';
 
@@ -15,13 +16,17 @@ class OilStockProvider extends ChangeNotifier {
   OilStock? get currentDateStock => _currentDateStock;
   bool get isCarryForward => _isCarryForward;
 
-  int get monthTotal => _monthStocks.fold<int>(0, (sum, o) => sum + o.subtotal);
+  int get monthTotal =>
+      _monthTotalStocks?.subtotal ?? _monthStocks.fold<int>(0, (sum, o) => sum + o.subtotal);
   int get dayTotal => _dayStocks.fold<int>(0, (sum, o) => sum + o.subtotal);
 
   Future<void> loadMonthStocks(String activeMonth) async {
     _activeMonth = activeMonth;
     final range = monthRange(activeMonth);
     _monthStocks = await DatabaseHelper.instance.getOilStocksByMonth(range[0], range[1]);
+    final latest = await DatabaseHelper.instance
+        .getLatestOilStockByMonth(range[0], range[1]);
+    _monthTotalStocks = latest;
     notifyListeners();
   }
 
@@ -31,14 +36,10 @@ class OilStockProvider extends ChangeNotifier {
   }
 
   Future<void> loadForDate(String date) async {
-    final dayStocks = await DatabaseHelper.instance.getOilStocksByDate(date);
-    if (dayStocks.isNotEmpty) {
-      _currentDateStock = dayStocks.first;
-      _isCarryForward = false;
-    } else {
-      _currentDateStock = await DatabaseHelper.instance.getLatestOilStock(date);
-      _isCarryForward = _currentDateStock != null;
-    }
+    _currentDateStock =
+        await DatabaseHelper.instance.materializeOilStock(date);
+    _isCarryForward = false;
+    await _reloadMonth();
     notifyListeners();
   }
 
