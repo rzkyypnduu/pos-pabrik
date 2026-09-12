@@ -349,7 +349,7 @@ class SyncProvider extends ChangeNotifier {
           if (uuid == null) continue;
           final deleted = row['deleted_at'] as String?;
           if (deleted != null && deleted.isNotEmpty) {
-            await _db.applyRemoteDelete(table, uuid);
+            await _db.applyRemoteDelete(table, uuid, row);
           } else {
             await _db.applyRemoteRow(table, row);
           }

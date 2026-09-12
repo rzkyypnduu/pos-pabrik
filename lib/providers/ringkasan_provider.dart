@@ -32,8 +32,14 @@ class RingkasanProvider extends ChangeNotifier {
       return;
     }
     final range = monthRange(_activeMonth);
+    final now = DateTime.now();
+    final currentMonth =
+        '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}';
+    final analyticsStart = _activeMonth == currentMonth
+        ? todayString()
+        : range[0];
     topCustomers = await DatabaseHelper.instance.getTopCustomersByMonth(
-      range[0],
+      analyticsStart,
       range[1],
       sortBy: mode,
     );
@@ -47,6 +53,16 @@ class RingkasanProvider extends ChangeNotifier {
   }) async {
     _activeMonth = activeMonth;
     final range = monthRange(activeMonth);
+
+    // SEMENTARA (khusus bulan berjalan): data analitik mulai dihitung dari
+    // hari ini saja karena catatan awal bulan kemarin hilang. Bulan berikutnya
+    // otomatis kembali normal (mulai tanggal 1).
+    final now = DateTime.now();
+    final currentMonth =
+        '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}';
+    final analyticsStart = activeMonth == currentMonth
+        ? todayString()
+        : range[0];
 
     final oils = await DatabaseHelper.instance
         .getOilStocksByMonth(range[0], range[1]);
@@ -78,16 +94,16 @@ class RingkasanProvider extends ChangeNotifier {
 
     // Analytics
     topProducts = await DatabaseHelper.instance.getTopProductsByMonth(
-      range[0],
+      analyticsStart,
       range[1],
     );
     topCustomers = await DatabaseHelper.instance.getTopCustomersByMonth(
-      range[0],
+      analyticsStart,
       range[1],
       sortBy: _topCustomersSortMode,
     );
     dailySales = await DatabaseHelper.instance.getDailySalesByMonth(
-      range[0],
+      analyticsStart,
       range[1],
     );
     totalMonthlySales = dailySales.fold<int>(

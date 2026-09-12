@@ -322,6 +322,83 @@ class DatabaseHelper {
   Future<int?> _localProductIdByUuid(String uuid) =>
       _localIdByUuid('products', uuid);
 
+  static final DateTime _epoch =
+      DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+
+  /// Tabel "copy & putus" per hari. Slot di-resolusi dengan last-writer-wins:
+  /// oil_stocks & saldo_deductions -> slot = tanggal;
+  /// stock_managements/stock_remainings/personal_ledgers -> slot = tanggal+nama.
+  static const _slotTables = {
+    'oil_stocks',
+    'stock_managements',
+    'stock_remainings',
+    'personal_ledgers',
+    'saldo_deductions',
+  };
+
+  bool _isSlotTable(String table) => _slotTables.contains(table);
+
+  DateTime _parseTs(String? s) {
+    if (s == null || s.isEmpty) return _epoch;
+    return DateTime.tryParse(s) ?? _epoch;
+  }
+
+  Future<DateTime> _maxSlotUpdatedAt(
+    String table,
+    String date,
+    String? name,
+  ) async {
+    final db = await database;
+    final rows = await db.query(
+      table,
+      columns: ['updated_at'],
+      where: name == null || name.isEmpty
+          ? 'date = ?'
+          : 'date = ? AND name = ?',
+      whereArgs: name == null || name.isEmpty ? [date] : [date, name],
+    );
+    var max = _epoch;
+    for (final r in rows) {
+      final t = _parseTs(r['updated_at'] as String?);
+      if (t.isAfter(max)) max = t;
+    }
+    return max;
+  }
+
+  Future<List<int>> _slotLocalIds(
+    String table,
+    String date,
+    String? name,
+  ) async {
+    final db = await database;
+    final rows = await db.query(
+      table,
+      columns: ['id'],
+      where: name == null || name.isEmpty
+          ? 'date = ?'
+          : 'date = ? AND name = ?',
+      whereArgs: name == null || name.isEmpty ? [date] : [date, name],
+    );
+    return rows.map((r) => r['id'] as int).toList();
+  }
+
+  Future<bool> _localRowNewerThan(
+    String table,
+    int id,
+    DateTime remoteTs,
+  ) async {
+    final db = await database;
+    final rows = await db.query(
+      table,
+      columns: ['updated_at'],
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
+    if (rows.isEmpty) return false;
+    return _parseTs(rows.first['updated_at'] as String?).isAfter(remoteTs);
+  }
+
   /// Terapkan baris remote ke tabel lokal. `payload` memakai kolom remote:
   /// `id` = uuid, kolom FK (sale_id/product_id) berisi uuid. TIDAK menulis outbox.
   Future<void> applyRemoteRow(
@@ -335,6 +412,8 @@ class DatabaseHelper {
     final row = Map<String, dynamic>.from(payload);
     row.remove('id');
     row['uuid'] = uuid;
+
+    final remoteTs = _parseTs(row['updated_at'] as String?);
 
     if (table == 'sale_items') {
       final saleUuid = row.remove('sale_id') as String?;
@@ -360,71 +439,89 @@ class DatabaseHelper {
       }
     }
 
-    row.remove('updated_at');
     row.remove('deleted_at');
     row.remove('updated_by');
-    row['updated_at'] = _now();
+    final savedTs = row['updated_at'] as String?;
+    row['updated_at'] = (savedTs == null || savedTs.isEmpty)
+        ? _now()
+        : savedTs;
 
     final existingId = await _localIdByUuid(table, uuid);
     if (existingId != null) {
+      // Last-writer-wins: jangan turunkan baris yang diedit lebih baru lokal.
+      if (await _localRowNewerThan(table, existingId, remoteTs)) return;
       row.remove('created_at');
       row['id'] = existingId;
       await db.update(table, row, where: 'id = ?', whereArgs: [existingId]);
-    } else {
-      // Copy & putus: hindari duplikat salinan harian antar perangkat. Jika
-      // untuk slot (tanggal+[nama]) yang sama sudah ada baris lokal lain,
-      // baris remote ini dianggap salinan ganda dan dilewati.
-      if (await _hasSameDaySlot(table, row)) return;
-      await db.insert(table, row);
+      return;
     }
+
+    if (_isSlotTable(table)) {
+      final date = row['date'] as String?;
+      if (date == null || date.isEmpty) return;
+      final name = row['name'] as String?;
+      final localIds = await _slotLocalIds(table, date, name);
+      if (localIds.isEmpty) {
+        // Slot kosong: jangan tarik kembali jika slot sengaja dihapus dgn ts
+        // yang lebih baru daripada baris remote ini.
+        if ((await slotDeletedSince(table, date, name)).isAfter(remoteTs)) {
+          return;
+        }
+        await db.insert(table, row);
+        return;
+      }
+      // Slot terisi baris lain (uji uuid lain): ambil yang terbaru.
+      final maxLocal = await _maxSlotUpdatedAt(table, date, name);
+      if (maxLocal.isAfter(remoteTs)) return;
+      for (final id in localIds) {
+        await db.delete(table, where: 'id = ?', whereArgs: [id]);
+      }
+      await db.insert(table, row);
+      return;
+    }
+
+    await db.insert(table, row);
   }
 
-  Future<bool> _hasSameDaySlot(String table, Map<String, dynamic> row) async {
+  Future<void> applyRemoteDelete(
+    String table,
+    String uuid, [
+    Map<String, dynamic>? row,
+  ]) async {
     final db = await database;
-    final date = row['date'] as String?;
-    if (date == null || date.isEmpty) return false;
-    // Slot yang sudah sengaja dihapus di perangkat ini tidak boleh ditarik
-    // kembali dari perangkat lain.
-    if (await isSlotDeleted(table, date, row['name'] as String?)) return true;
-    if (table == 'oil_stocks' || table == 'saldo_deductions') {
-      final maps = await db.query(
+    if (_isSlotTable(table)) {
+      final date = row?['date'] as String?;
+      if (date == null || date.isEmpty) {
+        await db.delete(table, where: 'uuid = ?', whereArgs: [uuid]);
+        return;
+      }
+      final name = row?['name'] as String?;
+      final tomb = _parseTs(row?['updated_at'] as String?);
+      final localIds = await _slotLocalIds(table, date, name);
+      if (localIds.isEmpty) {
+        await db.delete(table, where: 'uuid = ?', whereArgs: [uuid]);
+        if (tomb.isAfter(await slotDeletedSince(table, date, name))) {
+          await markSlotDeleted(table, date, name, at: tomb);
+        }
+        return;
+      }
+      // Delete = peniadaan seluruh slot; hanya berlaku jika ts-nya lebih baru
+      // dari nilai slot lokal saat ini.
+      final maxLocal = await _maxSlotUpdatedAt(table, date, name);
+      if (!tomb.isAfter(maxLocal)) return;
+      for (final id in localIds) {
+        await db.delete(table, where: 'id = ?', whereArgs: [id]);
+      }
+      await markSlotDeleted(table, date, name, at: tomb);
+      final left = await db.query(
         table,
         columns: ['id'],
         where: 'date = ?',
         whereArgs: [date],
-        limit: 1,
       );
-      if (maps.isNotEmpty) return true;
-    } else if (table == 'stock_managements' ||
-        table == 'stock_remainings' ||
-        table == 'personal_ledgers') {
-      final name = row['name'] as String?;
-      if (name == null || name.isEmpty) return false;
-      final maps = await db.query(
-        table,
-        columns: ['id'],
-        where: 'date = ? AND name = ?',
-        whereArgs: [date, name],
-        limit: 1,
-      );
-      if (maps.isNotEmpty) return true;
-    } else {
-      return false;
+      if (left.isEmpty) await markDayMaterialized(table, date, at: tomb);
+      return;
     }
-    // Hari sudah "dimiliki" perangkat ini (pernah dimuat/salinan) tapi kini
-    // kosong -> sengaja dihapus: jangan menarik kembali salinan perangkat lain.
-    final dayRows = await db.query(
-      table,
-      columns: ['id'],
-      where: 'date = ?',
-      whereArgs: [date],
-    );
-    if (dayRows.isNotEmpty) return false;
-    return isDayMaterialized(table, date);
-  }
-
-  Future<void> applyRemoteDelete(String table, String uuid) async {
-    final db = await database;
     await db.delete(table, where: 'uuid = ?', whereArgs: [uuid]);
   }
 
@@ -909,22 +1006,31 @@ class DatabaseHelper {
   /// Copy & putus minyak: jika [date] belum punya catatan, salin nilai hari
   /// terakhir sebelumnya menjadi milik [date] (id baru).
   Future<bool> isDayMaterialized(String table, String date) async {
-    return await getSyncMeta('mater_${table}_$date') == '1';
+    final v = await getSyncMeta('mater_${table}_$date');
+    return v != null && v.isNotEmpty;
   }
 
-  Future<void> markDayMaterialized(String table, String date) async {
-    await setSyncMeta('mater_${table}_$date', '1');
+  Future<void> markDayMaterialized(
+    String table,
+    String date, {
+    DateTime? at,
+  }) async {
+    await setSyncMeta(
+      'mater_${table}_$date',
+      (at ?? DateTime.now()).toIso8601String(),
+    );
   }
 
   Future<void> markSlotDeleted(
     String table,
     String date,
-    String? name,
-  ) async {
+    String? name, {
+    DateTime? at,
+  }) async {
     final key = (name == null || name.isEmpty)
         ? 'del|$table|$date'
         : 'del|$table|$date|$name';
-    await setSyncMeta(key, '1');
+    await setSyncMeta(key, (at ?? DateTime.now()).toIso8601String());
   }
 
   Future<bool> isSlotDeleted(
@@ -935,7 +1041,23 @@ class DatabaseHelper {
     final key = (name == null || name.isEmpty)
         ? 'del|$table|$date'
         : 'del|$table|$date|$name';
-    return await getSyncMeta(key) == '1';
+    final v = await getSyncMeta(key);
+    return v != null && v.isNotEmpty;
+  }
+
+  /// Waktu terakhir slot ini sengaja dihapus (timestamp marker). Missing /
+  /// legacy bernilai epoch sehingga baris remote dengan ts nyata boleh masuk.
+  Future<DateTime> slotDeletedSince(
+    String table,
+    String date,
+    String? name,
+  ) async {
+    final key = (name == null || name.isEmpty)
+        ? 'del|$table|$date'
+        : 'del|$table|$date|$name';
+    final v = await getSyncMeta(key);
+    if (v == null || v.isEmpty) return _epoch;
+    return DateTime.tryParse(v) ?? _epoch;
   }
 
   Future<OilStock?> materializeOilStock(String date) async {

@@ -190,7 +190,13 @@ class _PosScreenState extends State<PosScreen> {
         sdProv.loadMonth(tabProv.activeMonth);
         break;
       case 3: // Ringkasan
-        context.read<CustomerLedgerProvider>().loadAll();
+        final ledgerProvR = context.read<CustomerLedgerProvider>();
+        ledgerProvR.loadAll();
+        context.read<RingkasanProvider>().calculate(
+          activeMonth: tabProv.activeMonth,
+          selectedDate: tabProv.selectedDate,
+          customerBalances: ledgerProvR.balances,
+        );
         break;
       case 4: // Pengaturan
         break;
