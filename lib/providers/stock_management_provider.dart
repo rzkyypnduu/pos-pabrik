@@ -18,7 +18,8 @@ class StockManagementProvider extends ChangeNotifier {
 
   int get monthTotal =>
       _monthTotalRecords.fold<int>(0, (sum, s) => sum + s.subtotal);
-  int get dayTotal => _dayStocks.fold<int>(0, (sum, s) => sum + s.subtotal);
+  int get dayTotal =>
+      _currentDateStocks.fold<int>(0, (sum, s) => sum + s.subtotal);
 
   List<String> get holderNames {
     return _currentDateStocks.map((s) => s.name).toSet().toList()..sort();
@@ -142,8 +143,19 @@ class StockManagementProvider extends ChangeNotifier {
   }
 
   Future<void> deleteStockMgmt(int id) async {
+    String? day;
+    for (final s in _monthStocks) {
+      if (s.id == id) {
+        day = s.date;
+        break;
+      }
+    }
     await DatabaseHelper.instance.deleteStockManagement(id);
-    await _reloadMonth();
+    if (day == null || day.isEmpty) {
+      await _reloadMonth();
+    } else {
+      await loadForDate(day);
+    }
   }
 
   Future<void> deleteStockBatch(int itemId, String batchId) async {
@@ -164,7 +176,12 @@ class StockManagementProvider extends ChangeNotifier {
       );
       await DatabaseHelper.instance.updateStockManagement(updated);
     }
-    await _reloadMonth();
+    final day = item.date;
+    if (day == null || day.isEmpty) {
+      await _reloadMonth();
+    } else {
+      await loadForDate(day);
+    }
   }
 
   Future<void> updateBatchSacks(int itemId, String batchId, List<double> newSacks) async {
@@ -182,7 +199,12 @@ class StockManagementProvider extends ChangeNotifier {
       batches: batches,
     );
     await DatabaseHelper.instance.updateStockManagement(updated);
-    await _reloadMonth();
+    final day = item.date;
+    if (day == null || day.isEmpty) {
+      await _reloadMonth();
+    } else {
+      await loadForDate(day);
+    }
   }
 
   Future<void> updateBatchPrice(int itemId, String batchId, int newPrice) async {
@@ -200,6 +222,11 @@ class StockManagementProvider extends ChangeNotifier {
       batches: batches,
     );
     await DatabaseHelper.instance.updateStockManagement(updated);
-    await _reloadMonth();
+    final day = item.date;
+    if (day == null || day.isEmpty) {
+      await _reloadMonth();
+    } else {
+      await loadForDate(day);
+    }
   }
 }

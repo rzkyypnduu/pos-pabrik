@@ -258,8 +258,7 @@ class _HasilTabState extends State<HasilTab> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 _sectionHeader(
-                  '1. Rekap Hutang Pelanggan',
-                  'Pembayaran memotong hutang terlama (FIFO).',
+                  '1. Rekap Hutang Pelanggan', ''
                 ),
                 _HutangPelangganSection(onSaved: _refreshData),
                 const SizedBox(height: 16),
@@ -294,7 +293,7 @@ class _HasilTabState extends State<HasilTab> {
 
                 _sectionHeader(
                   '5. Rincian Harian',
-                  'Rincian pergerakan dana hingga tanggal ini.',
+                  '',
                 ),
                 _RincianHarianSection(
                   oilQtyController: oilQtyController,
@@ -1218,7 +1217,7 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
     return Consumer<StockManagementProvider>(
       builder: (context, smProv, _) {
         final grouped = <String, List<StockManagement>>{};
-        for (final sm in smProv.monthStocks) {
+        for (final sm in smProv.currentDateStocks) {
           grouped.putIfAbsent(sm.name, () => []).add(sm);
         }
 
@@ -1241,7 +1240,7 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
                     if (isMobile)
                       Flexible(
                         child: Text(
-                          'Total: ${rupiahD(smProv.monthTotal)}',
+                          'Total: ${rupiahD(smProv.dayTotal)}',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
@@ -1253,7 +1252,7 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
                       )
                     else
                       Text(
-                        'Total: ${rupiahD(smProv.monthTotal)}',
+                        'Total: ${rupiahD(smProv.dayTotal)}',
                         style: const TextStyle(
                           fontFamily: 'monospace',
                           fontWeight: FontWeight.w700,
@@ -1724,7 +1723,7 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
     StockManagementProvider smProv,
   ) {
     final sackController = TextEditingController();
-    final holderItems = smProv.monthStocks.where((s) => s.name == holderName);
+    final holderItems = smProv.currentDateStocks.where((s) => s.name == holderName);
     final defaultPrice = holderItems.isNotEmpty ? holderItems.first.price : 0;
     final priceController = TextEditingController(
       text: defaultPrice > 0 ? defaultPrice.toString() : '',
@@ -1949,7 +1948,7 @@ class _SisaBarangSectionState extends State<_SisaBarangSection> {
                       ),
                     ),
                     Text(
-                      'Total: ${rupiahD(srProv.monthTotal)}',
+                      'Total: ${rupiahD(srProv.dayTotal)}',
                       style: const TextStyle(
                         fontFamily: 'monospace',
                         fontWeight: FontWeight.w700,
@@ -2115,7 +2114,7 @@ class _SisaBarangSectionState extends State<_SisaBarangSection> {
                       ),
                     ],
                   ),
-                if (srProv.monthStocks.isNotEmpty) ...[
+                if (srProv.currentDateStocks.isNotEmpty) ...[
                   const SizedBox(height: 12),
                   _buildList(srProv),
                 ],
@@ -2232,7 +2231,7 @@ class _SisaBarangSectionState extends State<_SisaBarangSection> {
       ),
     );
 
-    final dataRows = srProv.monthStocks.asMap().entries.map((entry) {
+    final dataRows = srProv.currentDateStocks.asMap().entries.map((entry) {
       final sr = entry.value;
       final isEditing = _editingId == sr.id;
       final isPriceEditing = _editingPriceId == sr.id;
@@ -2498,7 +2497,7 @@ class _HutangPribadiSectionState extends State<_HutangPribadiSection> {
                       ),
                     ),
                     Text(
-                      'Total: ${rupiahD(plProv.monthTotal)}',
+                      'Total: ${rupiahD(plProv.dayTotal)}',
                       style: const TextStyle(
                         fontFamily: 'monospace',
                         fontWeight: FontWeight.w700,
@@ -2589,7 +2588,7 @@ class _HutangPribadiSectionState extends State<_HutangPribadiSection> {
                       ),
                     ],
                   ),
-                if (plProv.monthLedgers.isNotEmpty) ...[
+                if (plProv.currentDateLedgers.isNotEmpty) ...[
                   const SizedBox(height: 12),
                   _buildList(plProv),
                 ],
@@ -2799,7 +2798,7 @@ class _HutangPribadiSectionState extends State<_HutangPribadiSection> {
       ),
     );
 
-    final dataRows = plProv.monthLedgers.asMap().entries.map((entry) {
+    final dataRows = plProv.currentDateLedgers.asMap().entries.map((entry) {
       final pl = entry.value;
       return Container(
         decoration: const BoxDecoration(

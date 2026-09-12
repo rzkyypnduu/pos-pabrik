@@ -16,6 +16,8 @@ class PersonalLedgerProvider extends ChangeNotifier {
 
   int get monthTotal =>
       _monthTotalLedgers.fold<int>(0, (sum, l) => sum + l.amount);
+  int get dayTotal =>
+      _currentDateLedgers.fold<int>(0, (sum, l) => sum + l.amount);
 
   Future<void> loadMonth(String activeMonth) async {
     _activeMonth = activeMonth;
@@ -45,12 +47,30 @@ class PersonalLedgerProvider extends ChangeNotifier {
   }
 
   Future<void> deleteEntry(int id) async {
+    String? day;
+    for (final l in _monthLedgers) {
+      if (l.id == id) {
+        day = l.date;
+        break;
+      }
+    }
     await DatabaseHelper.instance.deletePersonalLedger(id);
-    await loadMonth(_activeMonth);
-    notifyListeners();
+    if (day == null || day.isEmpty) {
+      await loadMonth(_activeMonth);
+      notifyListeners();
+    } else {
+      await loadForDate(day);
+    }
   }
 
   Future<void> updateEntry(int id, String name, int amount, String note) async {
+    String? day;
+    for (final l in _monthLedgers) {
+      if (l.id == id) {
+        day = l.date;
+        break;
+      }
+    }
     await DatabaseHelper.instance.updatePersonalLedger(PersonalLedger(
       id: id,
       date: '',
@@ -58,7 +78,11 @@ class PersonalLedgerProvider extends ChangeNotifier {
       amount: amount,
       note: note.isNotEmpty ? note : null,
     ));
-    await loadMonth(_activeMonth);
-    notifyListeners();
+    if (day == null || day.isEmpty) {
+      await loadMonth(_activeMonth);
+      notifyListeners();
+    } else {
+      await loadForDate(day);
+    }
   }
 }

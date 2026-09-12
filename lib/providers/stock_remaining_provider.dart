@@ -19,7 +19,8 @@ List<StockRemaining> _monthStocks = [];
 
   int get monthTotal =>
       _monthTotalRecords.fold<int>(0, (sum, s) => sum + s.subtotal);
-  int get dayTotal => _dayStocks.fold<int>(0, (sum, s) => sum + s.subtotal);
+  int get dayTotal =>
+      _currentDateStocks.fold<int>(0, (sum, s) => sum + s.subtotal);
 
   Future<void> loadMonthStocks(String activeMonth) async {
     _activeMonth = activeMonth;
@@ -63,8 +64,19 @@ List<StockRemaining> _monthStocks = [];
   }
 
   Future<void> deleteRemain(int id) async {
+    String? day;
+    for (final s in _monthStocks) {
+      if (s.id == id) {
+        day = s.date;
+        break;
+      }
+    }
     await DatabaseHelper.instance.deleteStockRemaining(id);
-    await _reloadMonth();
+    if (day == null || day.isEmpty) {
+      await _reloadMonth();
+    } else {
+      await loadForDate(day);
+    }
   }
 
   Future<void> updateRemain(int id, double qty, int price, String date) async {
