@@ -57,7 +57,6 @@ class _TransaksiTabState extends State<TransaksiTab> {
     if (_searchQuery.isNotEmpty) {
       _searchQuery = '';
       _searchCtrl.clear();
-      txProv.clearSearchResults();
     }
     txProv.loadDaySales(date);
     expProv.loadDayExpenses(date);
@@ -76,115 +75,18 @@ class _TransaksiTabState extends State<TransaksiTab> {
   }
 
   Widget _buildSearchCard(BuildContext context) {
-    final txProv = context.watch<TransactionProvider>();
-    final tabProv = context.read<TabProvider>();
-    final prodProv = context.read<ProductProvider>();
-    final results = txProv.searchResults;
-    final q = _searchQuery.trim();
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        TextField(
-          controller: _searchCtrl,
-          onChanged: (v) {
-            setState(() => _searchQuery = v);
-            final date = context.read<TabProvider>().selectedDate;
-            txProv.searchSales(v, date);
-          },
-          decoration: InputDecoration(
-            hintText: 'Cari transaksi (nama pelanggan)...',
-            prefixIcon: const Icon(Icons.search, size: 20),
-            helperText: 'Hanya transaksi pada tanggal ini.',
-            isDense: true,
-            border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(10),
-            ),
-          ),
+    return TextField(
+      controller: _searchCtrl,
+      onChanged: (v) => setState(() => _searchQuery = v),
+      decoration: const InputDecoration(
+        hintText: 'Cari transaksi (nama/produk)...',
+        prefixIcon: Icon(Icons.search, size: 20),
+        helperText: 'Memfilter kartu transaksi hari ini.',
+        isDense: true,
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.all(Radius.circular(10)),
         ),
-        if (q.isNotEmpty) ...[
-          const SizedBox(height: 8),
-          results.isEmpty
-              ? const Text(
-                  'Tidak ada transaksi ditemukan.',
-                  style: TextStyle(fontSize: 12, color: AppTheme.inkSoft),
-                )
-              : Column(
-                  children: [
-                    for (final sale in results)
-                      Material(
-                        color: Colors.transparent,
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(8),
-                          onTap: () async {
-                            txProv.loadSaleForPayment(
-                              sale,
-                              prodProv.products,
-                            );
-                            final result = await Navigator.of(context).push<
-                                bool>(
-                              MaterialPageRoute(
-                                builder: (_) => ChangeNotifierProvider.value(
-                                  value: txProv,
-                                  child: TransaksiFormScreen(
-                                    selectedDate: tabProv.selectedDate,
-                                  ),
-                                ),
-                              ),
-                            );
-                            if (result == true) _loadData();
-                          },
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 10,
-                            ),
-                            child: Row(
-                              children: [
-                                const Icon(
-                                  Icons.receipt_long,
-                                  size: 18,
-                                  color: AppTheme.accent,
-                                ),
-                                const SizedBox(width: 10),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        sale.name,
-                                        style: const TextStyle(
-                                          fontSize: 14,
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
-                                      Text(
-                                        sale.date,
-                                        style: const TextStyle(
-                                          fontSize: 12,
-                                          color: AppTheme.inkSoft,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                Text(
-                                  rupiah(sale.rawTotal),
-                                  style: const TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w700,
-                                    color: AppTheme.accent,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-        ],
-      ],
+      ),
     );
   }
 
@@ -208,6 +110,16 @@ class _TransaksiTabState extends State<TransaksiTab> {
     final totalPaid = txProv.recapTotalPaid();
     final expenseTotal = expProv.dayExpenseTotal;
     final kasBersih = totalPaid - expenseTotal;
+
+    final qLower = _searchQuery.trim().toLowerCase();
+    final visibleSales = qLower.isEmpty
+        ? txProv.daySales
+        : txProv.daySales.where((s) {
+            if (s.name.toLowerCase().contains(qLower)) return true;
+            return txProv
+                .getItemsForSale(s.id!)
+                .any((i) => i.name.toLowerCase().contains(qLower));
+          }).toList();
 
     return Column(
       children: [
@@ -366,10 +278,24 @@ class _TransaksiTabState extends State<TransaksiTab> {
                             ),
                           ),
                         )
+                      : visibleSales.isEmpty
+                      ? Padding(
+                          padding: const EdgeInsets.all(40),
+                          child: Center(
+                            child: Text(
+                              'Tidak ada transaksi ditemukan untuk "${_searchQuery.trim()}".',
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                color: AppTheme.inkSoft,
+                                fontSize: 14,
+                              ),
+                            ),
+                          ),
+                        )
                       : isMobile
                       ? Column(
                           children: [
-                            ...txProv.daySales.map((sale) {
+                            ...visibleSales.map((sale) {
                               final items = txProv.getItemsForSale(sale.id!);
                               return _buildMobileSaleCard(sale, items, tabProv);
                             }),
@@ -467,7 +393,7 @@ class _TransaksiTabState extends State<TransaksiTab> {
                                 ],
                               ),
                             ),
-                            ...txProv.daySales.map((sale) {
+                            ...visibleSales.map((sale) {
                               final items = txProv.getItemsForSale(sale.id!);
                               final statusBadge = _buildStatusBadge(
                                 sale,

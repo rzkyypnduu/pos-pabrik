@@ -1019,7 +1019,7 @@ class DatabaseHelper {
     final db = await database;
     final maps = await db.query(
       'stock_managements',
-      where: '(date BETWEEN ? AND ? OR date IS NULL)',
+      where: 'date BETWEEN ? AND ?',
       whereArgs: [startDate, endDate],
       orderBy: 'id ASC',
     );
@@ -1030,7 +1030,7 @@ class DatabaseHelper {
     final db = await database;
     final maps = await db.query(
       'stock_managements',
-      where: 'date = ? OR date IS NULL',
+      where: 'date = ?',
       whereArgs: [date],
       orderBy: 'id ASC',
     );

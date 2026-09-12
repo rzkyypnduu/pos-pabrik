@@ -102,9 +102,6 @@ class StockManagementProvider extends ChangeNotifier {
         break;
       }
     }
-    existing ??= _monthStocks
-        .where((s) => s.name.toLowerCase() == name.toLowerCase())
-        .firstOrNull;
 
     final newBatches = <Map<String, dynamic>>[
       for (int i = 0; i < sacks.length; i++)
