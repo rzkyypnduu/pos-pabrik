@@ -81,123 +81,110 @@ class _TransaksiTabState extends State<TransaksiTab> {
     final prodProv = context.read<ProductProvider>();
     final results = txProv.searchResults;
     final q = _searchQuery.trim();
-    return Card(
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Cari Transaksi',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        TextField(
+          controller: _searchCtrl,
+          onChanged: (v) {
+            setState(() => _searchQuery = v);
+            final date = context.read<TabProvider>().selectedDate;
+            txProv.searchSales(v, date);
+          },
+          decoration: InputDecoration(
+            hintText: 'Cari transaksi (nama pelanggan)...',
+            prefixIcon: const Icon(Icons.search, size: 20),
+            helperText: 'Hanya transaksi pada tanggal ini.',
+            isDense: true,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(10),
             ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: _searchCtrl,
-              onChanged: (v) {
-                setState(() => _searchQuery = v);
-                final date = context.read<TabProvider>().selectedDate;
-                txProv.searchSales(v, date);
-              },
-              decoration: InputDecoration(
-                hintText: 'Ketik nama pelanggan...',
-                prefixIcon: const Icon(Icons.search, size: 20),
-                isDense: true,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-              ),
-            ),
-            const SizedBox(height: 8),
-            if (q.isNotEmpty) ...[
-              const SizedBox(height: 4),
-              results.isEmpty
-                  ? const Text(
-                      'Tidak ada transaksi ditemukan.',
-                      style: TextStyle(fontSize: 12, color: AppTheme.inkSoft),
-                    )
-                  : Column(
-                      children: [
-                        for (final sale in results)
-                          Material(
-                            color: Colors.transparent,
-                            child: InkWell(
-                              borderRadius: BorderRadius.circular(8),
-                              onTap: () async {
-                                txProv.loadSaleForPayment(
-                                  sale,
-                                  prodProv.products,
-                                );
-                                final result = await Navigator.of(context).push<
-                                    bool>(
-                                  MaterialPageRoute(
-                                    builder: (_) =>
-                                        ChangeNotifierProvider.value(
-                                      value: txProv,
-                                      child: TransaksiFormScreen(
-                                        selectedDate:
-                                            tabProv.selectedDate,
-                                      ),
-                                    ),
+          ),
+        ),
+        if (q.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          results.isEmpty
+              ? const Text(
+                  'Tidak ada transaksi ditemukan.',
+                  style: TextStyle(fontSize: 12, color: AppTheme.inkSoft),
+                )
+              : Column(
+                  children: [
+                    for (final sale in results)
+                      Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(8),
+                          onTap: () async {
+                            txProv.loadSaleForPayment(
+                              sale,
+                              prodProv.products,
+                            );
+                            final result = await Navigator.of(context).push<
+                                bool>(
+                              MaterialPageRoute(
+                                builder: (_) => ChangeNotifierProvider.value(
+                                  value: txProv,
+                                  child: TransaksiFormScreen(
+                                    selectedDate: tabProv.selectedDate,
                                   ),
-                                );
-                                if (result == true) _loadData();
-                              },
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 8,
-                                  vertical: 10,
-                                ),
-                                child: Row(
-                                  children: [
-                                    const Icon(
-                                      Icons.receipt_long,
-                                      size: 18,
-                                      color: AppTheme.accent,
-                                    ),
-                                    const SizedBox(width: 10),
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            sale.name,
-                                            style: const TextStyle(
-                                              fontSize: 14,
-                                              fontWeight: FontWeight.w600,
-                                            ),
-                                          ),
-                                          Text(
-                                            sale.date,
-                                            style: const TextStyle(
-                                              fontSize: 12,
-                                              color: AppTheme.inkSoft,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    Text(
-                                      rupiah(sale.rawTotal),
-                                      style: const TextStyle(
-                                        fontSize: 13,
-                                        fontWeight: FontWeight.w700,
-                                        color: AppTheme.accent,
-                                      ),
-                                    ),
-                                  ],
                                 ),
                               ),
+                            );
+                            if (result == true) _loadData();
+                          },
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 10,
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(
+                                  Icons.receipt_long,
+                                  size: 18,
+                                  color: AppTheme.accent,
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        sale.name,
+                                        style: const TextStyle(
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                      Text(
+                                        sale.date,
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          color: AppTheme.inkSoft,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                Text(
+                                  rupiah(sale.rawTotal),
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w700,
+                                    color: AppTheme.accent,
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
-                      ],
-                    ),
-            ],
-          ],
-        ),
-      ),
+                        ),
+                      ),
+                  ],
+                ),
+        ],
+      ],
     );
   }
 
