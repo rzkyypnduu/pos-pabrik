@@ -141,8 +141,10 @@ class SyncProvider extends ChangeNotifier {
 
   Future<void> _snapshotIfNeeded() async {
     if ((await _db.getSyncMeta(_keySnapshotDone)) == '1') return;
+    debugPrint('SYNC snapshot: running');
     await _db.enqueueAllForSnapshot();
     await _db.setSyncMeta(_keySnapshotDone, '1');
+    debugPrint('SYNC snapshot: done');
     await _refreshPendingCount();
   }
 
@@ -183,36 +185,70 @@ class SyncProvider extends ChangeNotifier {
     _busy = true;
     try {
       final pending = await _db.getPendingOutbox();
+      debugPrint('SYNC push start: ${pending.length} pending');
       if (pending.isNotEmpty) {
         final groups = <String, Map<String, List<Map<String, dynamic>>>>{};
         for (final entry in pending) {
           final eid = entry['id'] as int;
           final table = entry['table_name'] as String;
           final op = entry['operation'] as String;
-          final payload =
-              jsonDecode(entry['payload'] as String? ?? '{}')
-                  as Map<String, dynamic>;
+          final raw = entry['payload'] as String? ?? '{}';
+          Map<String, dynamic>? payload;
+          try {
+            final d = jsonDecode(raw);
+            if (d is Map<String, dynamic>) payload = d;
+          } catch (e) {
+            _lastError = '$e';
+          }
+          if (payload == null) {
+            await _db.deleteOutboxEntry(eid);
+            continue;
+          }
           if (payload['id'] == null) {
             await _db.deleteOutboxEntry(eid);
             continue;
           }
           final g = groups.putIfAbsent(
             table,
-            () => {'upsert': <Map<String, dynamic>>[], 'delete': <Map<String, dynamic>>[]},
+            () => {
+              'upsert': <Map<String, dynamic>>[],
+              'delete': <Map<String, dynamic>>[],
+            },
           );
           final map = Map<String, dynamic>.from(payload);
           map['_eid'] = eid;
-          g[op]!.add(map);
+          if (op == 'delete') {
+            g['delete']!.add(map);
+          } else {
+            g['upsert']!.add(map);
+          }
         }
         // Parent dulu (products/sales/expenses) sebelum child.
         for (final table in businessTables) {
           final g = groups.remove(table);
           if (g == null) continue;
           final upserts = g['upsert']!;
-          for (var i = 0; i < upserts.length; i += 500) {
-            final batch = upserts.sublist(
+          final deduped = <String, Map<String, dynamic>>{};
+          final dropped = <int>[];
+          for (final r in upserts) {
+            if (table == 'sale_items' && r['sale_id'] == null) {
+              dropped.add(r['_eid'] as int);
+              continue;
+            }
+            if (table == 'customer_ledgers' && r['sale_id'] == null) {
+              dropped.add(r['_eid'] as int);
+              continue;
+            }
+            deduped[r['id'].toString()] = r;
+          }
+          for (final e in dropped) {
+            await _db.deleteOutboxEntry(e);
+          }
+          final list = deduped.values.toList();
+          for (var i = 0; i < list.length; i += 500) {
+            final batch = list.sublist(
               i,
-              math.min(i + 500, upserts.length),
+              math.min(i + 500, list.length),
             );
             final body = batch.map((r) {
               final m = Map<String, dynamic>.from(r);
@@ -225,7 +261,8 @@ class SyncProvider extends ChangeNotifier {
               for (final r in batch) {
                 await _db.deleteOutboxEntry(r['_eid'] as int);
               }
-            } catch (e) {
+            } catch (e, st) {
+              debugPrint('SYNC upsert $table (${body.length}): $e\n$st');
               _lastError = '$e';
             }
           }
@@ -248,7 +285,8 @@ class SyncProvider extends ChangeNotifier {
               for (final r in batch) {
                 await _db.deleteOutboxEntry(r['_eid'] as int);
               }
-            } catch (e) {
+            } catch (e, st) {
+              debugPrint('SYNC delete $table (${ids.length}): $e\n$st');
               _lastError = '$e';
             }
           }
@@ -256,8 +294,10 @@ class SyncProvider extends ChangeNotifier {
       }
       await _refreshPendingCount();
       _lastSyncedAt = DateTime.now();
-    } catch (e) {
-      _lastError = kDebugMode ? '$e' : 'Gagal mengunggah data';
+    } catch (e, st) {
+      debugPrint('SYNC push err: $e\n$st');
+      _lastError = kDebugMode ? '$e\n$st' : '$e';
+      await _refreshPendingCount();
     } finally {
       _busy = false;
     }
@@ -323,8 +363,9 @@ class SyncProvider extends ChangeNotifier {
         keepGoing = rows.length == 500;
       }
       notifyListeners();
-    } catch (e) {
-      _lastError = kDebugMode ? '$e' : 'Gagal menarik data $table';
+    } catch (e, st) {
+      debugPrint('SYNC pull $table: $e\n$st');
+      _lastError = '$e';
     } finally {
       _busy = false;
     }

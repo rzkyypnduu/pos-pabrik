@@ -255,12 +255,16 @@ class DatabaseHelper {
     final db = await database;
     for (final table in tables) {
       final rows = await db.query(table, columns: ['id']);
+      debugPrint('SYNC snapshot $table: ${rows.length} (total ${_totalEnqueued})');
       for (final r in rows) {
         final id = r['id'];
         if (id is int) await _enqueueRow(table, 'update', id);
       }
+      _totalEnqueued += rows.length;
     }
   }
+
+  int _totalEnqueued = 0;
 
   Future<void> setOutboxSynced(int id) async {
     final db = await database;
