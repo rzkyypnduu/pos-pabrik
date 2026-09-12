@@ -391,9 +391,8 @@ class DatabaseHelper {
         whereArgs: [date],
         limit: 1,
       );
-      return maps.isNotEmpty;
-    }
-    if (table == 'stock_managements' ||
+      if (maps.isNotEmpty) return true;
+    } else if (table == 'stock_managements' ||
         table == 'stock_remainings' ||
         table == 'personal_ledgers') {
       final name = row['name'] as String?;
@@ -405,9 +404,20 @@ class DatabaseHelper {
         whereArgs: [date, name],
         limit: 1,
       );
-      return maps.isNotEmpty;
+      if (maps.isNotEmpty) return true;
+    } else {
+      return false;
     }
-    return false;
+    // Hari sudah "dimiliki" perangkat ini (pernah dimuat/salinan) tapi kini
+    // kosong -> sengaja dihapus: jangan menarik kembali salinan perangkat lain.
+    final dayRows = await db.query(
+      table,
+      columns: ['id'],
+      where: 'date = ?',
+      whereArgs: [date],
+    );
+    if (dayRows.isNotEmpty) return false;
+    return isDayMaterialized(table, date);
   }
 
   Future<void> applyRemoteDelete(String table, String uuid) async {
@@ -895,12 +905,25 @@ class DatabaseHelper {
 
   /// Copy & putus minyak: jika [date] belum punya catatan, salin nilai hari
   /// terakhir sebelumnya menjadi milik [date] (id baru).
+  Future<bool> isDayMaterialized(String table, String date) async {
+    return await getSyncMeta('mater_${table}_$date') == '1';
+  }
+
+  Future<void> markDayMaterialized(String table, String date) async {
+    await setSyncMeta('mater_${table}_$date', '1');
+  }
+
   Future<OilStock?> materializeOilStock(String date) async {
     final existing = await getOilStocksByDate(date);
-    if (existing.isNotEmpty) return existing.first;
+    if (existing.isNotEmpty) {
+      await markDayMaterialized('oil_stocks', date);
+      return existing.first;
+    }
+    if (await isDayMaterialized('oil_stocks', date)) return null;
     final latest = await getLatestOilStock(date);
     if (latest == null) return null;
     await insertOilStock(OilStock(date: date, qty: latest.qty, price: latest.price));
+    await markDayMaterialized('oil_stocks', date);
     final rows = await getOilStocksByDate(date);
     return rows.isNotEmpty ? rows.first : null;
   }
@@ -917,8 +940,20 @@ class DatabaseHelper {
 
   Future<int> deleteOilStock(int id) async {
     final db = await database;
+    final dayRow = await db.query(
+      'oil_stocks',
+      columns: ['date'],
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    final day = dayRow.isNotEmpty ? dayRow.first['date'] as String? : null;
     await _enqueueDeleteById('oil_stocks', id);
-    return await db.delete('oil_stocks', where: 'id = ?', whereArgs: [id]);
+    final affected = await db.delete('oil_stocks', where: 'id = ?', whereArgs: [id]);
+    if (affected > 0 && day != null) {
+      final left = await db.query('oil_stocks', where: 'date = ?', whereArgs: [day]);
+      if (left.isEmpty) await markDayMaterialized('oil_stocks', day);
+    }
+    return affected;
   }
 
   // ==================== STOCK MANAGEMENTS ====================
@@ -994,7 +1029,11 @@ class DatabaseHelper {
   /// dengan id record & id batch baru.
   Future<List<StockManagement>> materializeStockManagements(String date) async {
     final existing = await getStockManagementsByDate(date);
-    if (existing.isNotEmpty) return existing;
+    if (existing.isNotEmpty) {
+      await markDayMaterialized('stock_managements', date);
+      return existing;
+    }
+    if (await isDayMaterialized('stock_managements', date)) return [];
     final latestAll = await getLatestStockManagements(date);
     if (latestAll.isEmpty) return [];
     final byName = <String, StockManagement>{};
@@ -1022,6 +1061,7 @@ class DatabaseHelper {
         batches: copiedBatches,
       ));
     }
+    await markDayMaterialized('stock_managements', date);
     return getStockManagementsByDate(date);
   }
 
@@ -1043,12 +1083,28 @@ class DatabaseHelper {
 
   Future<int> deleteStockManagement(int id) async {
     final db = await database;
+    final dayRow = await db.query(
+      'stock_managements',
+      columns: ['date'],
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    final day = dayRow.isNotEmpty ? dayRow.first['date'] as String? : null;
     await _enqueueDeleteById('stock_managements', id);
-    return await db.delete(
+    final affected = await db.delete(
       'stock_managements',
       where: 'id = ?',
       whereArgs: [id],
     );
+    if (affected > 0 && day != null) {
+      final left = await db.query(
+        'stock_managements',
+        where: 'date = ?',
+        whereArgs: [day],
+      );
+      if (left.isEmpty) await markDayMaterialized('stock_managements', day);
+    }
+    return affected;
   }
 
   // ==================== STOCK REMAININGS ====================
@@ -1107,7 +1163,11 @@ class DatabaseHelper {
   /// terakhir tiap nama barang menjadi milik [date] (id baru).
   Future<List<StockRemaining>> materializeStockRemainings(String date) async {
     final existing = await getStockRemainingsByDate(date);
-    if (existing.isNotEmpty) return existing;
+    if (existing.isNotEmpty) {
+      await markDayMaterialized('stock_remainings', date);
+      return existing;
+    }
+    if (await isDayMaterialized('stock_remainings', date)) return [];
     final latestAll = await getLatestStockRemainings(date);
     if (latestAll.isEmpty) return [];
     final byName = <String, StockRemaining>{};
@@ -1122,6 +1182,7 @@ class DatabaseHelper {
         price: src.price,
       ));
     }
+    await markDayMaterialized('stock_remainings', date);
     return getStockRemainingsByDate(date);
   }
 
@@ -1143,12 +1204,28 @@ class DatabaseHelper {
 
   Future<int> deleteStockRemaining(int id) async {
     final db = await database;
+    final dayRow = await db.query(
+      'stock_remainings',
+      columns: ['date'],
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    final day = dayRow.isNotEmpty ? dayRow.first['date'] as String? : null;
     await _enqueueDeleteById('stock_remainings', id);
-    return await db.delete(
+    final affected = await db.delete(
       'stock_remainings',
       where: 'id = ?',
       whereArgs: [id],
     );
+    if (affected > 0 && day != null) {
+      final left = await db.query(
+        'stock_remainings',
+        where: 'date = ?',
+        whereArgs: [day],
+      );
+      if (left.isEmpty) await markDayMaterialized('stock_remainings', day);
+    }
+    return affected;
   }
 
   Future<int> updateStockRemaining(StockRemaining sr) async {
@@ -1312,7 +1389,11 @@ class DatabaseHelper {
   /// record terakhir tiap nama menjadi milik [date] (id baru).
   Future<List<PersonalLedger>> materializePersonalLedgers(String date) async {
     final existing = await getPersonalLedgersByDate(date);
-    if (existing.isNotEmpty) return existing;
+    if (existing.isNotEmpty) {
+      await markDayMaterialized('personal_ledgers', date);
+      return existing;
+    }
+    if (await isDayMaterialized('personal_ledgers', date)) return [];
     final latestAll = await getLatestPersonalLedgers(date);
     if (latestAll.isEmpty) return [];
     final byName = <String, PersonalLedger>{};
@@ -1327,6 +1408,7 @@ class DatabaseHelper {
         note: src.note,
       ));
     }
+    await markDayMaterialized('personal_ledgers', date);
     return getPersonalLedgersByDate(date);
   }
 
@@ -1348,12 +1430,28 @@ class DatabaseHelper {
 
   Future<int> deletePersonalLedger(int id) async {
     final db = await database;
+    final dayRow = await db.query(
+      'personal_ledgers',
+      columns: ['date'],
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    final day = dayRow.isNotEmpty ? dayRow.first['date'] as String? : null;
     await _enqueueDeleteById('personal_ledgers', id);
-    return await db.delete(
+    final affected = await db.delete(
       'personal_ledgers',
       where: 'id = ?',
       whereArgs: [id],
     );
+    if (affected > 0 && day != null) {
+      final left = await db.query(
+        'personal_ledgers',
+        where: 'date = ?',
+        whereArgs: [day],
+      );
+      if (left.isEmpty) await markDayMaterialized('personal_ledgers', day);
+    }
+    return affected;
   }
 
   Future<int> updatePersonalLedger(PersonalLedger ledger) async {
@@ -1447,7 +1545,11 @@ class DatabaseHelper {
   /// nilai terakhir sebelumnya menjadi milik [date] (id baru).
   Future<SaldoDeduction?> materializeSaldoDeduction(String date) async {
     final existing = await getSaldoDeductionsByDate(date);
-    if (existing.isNotEmpty) return existing.first;
+    if (existing.isNotEmpty) {
+      await markDayMaterialized('saldo_deductions', date);
+      return existing.first;
+    }
+    if (await isDayMaterialized('saldo_deductions', date)) return null;
     final latest = await getLatestSaldoDeduction(date);
     if (latest == null) return null;
     await insertSaldoDeduction(SaldoDeduction(
@@ -1456,6 +1558,7 @@ class DatabaseHelper {
       b: latest.b,
       note: latest.note,
     ));
+    await markDayMaterialized('saldo_deductions', date);
     final rows = await getSaldoDeductionsByDate(date);
     return rows.isNotEmpty ? rows.first : null;
   }
@@ -1472,12 +1575,28 @@ class DatabaseHelper {
 
   Future<int> deleteSaldoDeduction(int id) async {
     final db = await database;
+    final dayRow = await db.query(
+      'saldo_deductions',
+      columns: ['date'],
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    final day = dayRow.isNotEmpty ? dayRow.first['date'] as String? : null;
     await _enqueueDeleteById('saldo_deductions', id);
-    return await db.delete(
+    final affected = await db.delete(
       'saldo_deductions',
       where: 'id = ?',
       whereArgs: [id],
     );
+    if (affected > 0 && day != null) {
+      final left = await db.query(
+        'saldo_deductions',
+        where: 'date = ?',
+        whereArgs: [day],
+      );
+      if (left.isEmpty) await markDayMaterialized('saldo_deductions', day);
+    }
+    return affected;
   }
 
   // ==================== EXPENSES ====================
