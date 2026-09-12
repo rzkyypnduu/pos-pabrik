@@ -1,5 +1,3 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../constants/app_theme.dart';
@@ -8,7 +6,6 @@ import '../providers/tab_provider.dart';
 import '../providers/product_provider.dart';
 import '../models/product.dart';
 import '../providers/customer_ledger_provider.dart';
-import '../providers/transaction_provider.dart';
 import '../providers/oil_stock_provider.dart';
 import '../providers/ringkasan_provider.dart';
 import '../providers/stock_management_provider.dart';
@@ -18,6 +15,8 @@ import '../models/stock_remaining.dart';
 import '../providers/personal_ledger_provider.dart';
 import '../models/personal_ledger.dart';
 import '../providers/saldo_deduction_provider.dart';
+import '../providers/customer_daily_balance_provider.dart';
+import '../models/customer_daily_balance.dart';
 import '../providers/printer_provider.dart';
 import '../services/printer_service.dart';
 import '../widgets/confirmation_dialog.dart';
@@ -101,6 +100,7 @@ class _HasilTabState extends State<HasilTab> {
     final srProv = context.read<StockRemainingProvider>();
     final plProv = context.read<PersonalLedgerProvider>();
     final sdProv = context.read<SaldoDeductionProvider>();
+    final cdbProv = context.read<CustomerDailyBalanceProvider>();
     final ringProv = context.read<RingkasanProvider>();
 
     await ledgerProv.loadAll();
@@ -112,6 +112,7 @@ class _HasilTabState extends State<HasilTab> {
       srProv.loadMonthStocks(tabProv.activeMonth),
       plProv.loadMonth(tabProv.activeMonth),
       sdProv.loadMonth(tabProv.activeMonth),
+      cdbProv.loadMonth(tabProv.activeMonth),
     ]);
     if (!mounted) return;
 
@@ -121,6 +122,7 @@ class _HasilTabState extends State<HasilTab> {
       srProv.loadForDate(tabProv.selectedDate),
       plProv.loadForDate(tabProv.selectedDate),
       sdProv.loadForDate(tabProv.selectedDate),
+      cdbProv.loadForDate(tabProv.selectedDate),
     ]);
     if (!mounted) return;
 
@@ -346,133 +348,33 @@ class _HutangPelangganSection extends StatefulWidget {
 class _HutangPelangganSectionState extends State<_HutangPelangganSection> {
   final _addNameController = TextEditingController();
   final _addAmountController = TextEditingController();
-  final _addNoteController = TextEditingController();
-  final _editingControllers = <int, TextEditingController>{};
+  final Map<String, TextEditingController> _editingControllers = {};
   int? _editingId;
+  String? _editingField;
 
   @override
   void dispose() {
     _addNameController.dispose();
     _addAmountController.dispose();
-    _addNoteController.dispose();
     for (final c in _editingControllers.values) {
       c.dispose();
     }
     super.dispose();
   }
 
-  Widget _editableSisaCell(int? id, int remaining, {bool alignLeft = false}) {
-    if (id == null) {
-      return Text(
-        rupiahD(remaining),
-        textAlign: alignLeft ? TextAlign.left : TextAlign.right,
-        style: const TextStyle(
-          fontFamily: 'monospace',
-          fontSize: 12,
-          fontWeight: FontWeight.w600,
-        ),
-      );
-    }
-    if (_editingId != id) {
-      return InkWell(
-        onTap: () {
-          setState(() {
-            _editingId = id;
-            _editingControllers[id] = TextEditingController(
-              text: rupiahInputText(remaining),
-            );
-          });
-        },
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(
-            color: AppTheme.debtBg,
-            borderRadius: BorderRadius.circular(6),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            mainAxisAlignment: alignLeft
-                ? MainAxisAlignment.start
-                : MainAxisAlignment.end,
-            children: [
-              Text(
-                rupiahD(remaining),
-                softWrap: false,
-                style: const TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                  color: AppTheme.debt,
-                ),
-              ),
-              const SizedBox(width: 4),
-              const Icon(Icons.edit, size: 13, color: AppTheme.debt),
-            ],
-          ),
-        ),
-      );
-    }
-    final controller = _editingControllers[id]!;
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        SizedBox(
-          width: 110,
-          child: TextField(
-            controller: controller,
-            autofocus: true,
-            keyboardType: TextInputType.number,
-            inputFormatters: [RupiahInputFormatter()],
-            textAlign: TextAlign.right,
-            style: const TextStyle(
-              fontFamily: 'monospace',
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-            ),
-            decoration: const InputDecoration(
-              isDense: true,
-              contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 6),
-            ),
-            onSubmitted: (_) => _saveEdit(id),
-          ),
-        ),
-        IconButton(
-          icon: const Icon(Icons.check, size: 18, color: AppTheme.paid),
-          visualDensity: VisualDensity.compact,
-          onPressed: () => _saveEdit(id),
-        ),
-      ],
-    );
-  }
-
-  Future<void> _saveEdit(int id) async {
-    final controller = _editingControllers[id];
-    final newRemaining = parseRupiah(controller!.text);
-    final ledgerProv = context.read<CustomerLedgerProvider>();
-    await ledgerProv.adjustDebtCell(id, newRemaining);
-    if (mounted) {
-      setState(() {
-        _editingId = null;
-      });
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
-    return Consumer<CustomerLedgerProvider>(
-      builder: (context, ledgerProv, _) {
-        final names = ledgerProv.namesWithDebt;
-
+    final isMobile = AppTheme.isMobile(context);
+    return Consumer<CustomerDailyBalanceProvider>(
+      builder: (context, cdbProv, _) {
         return Card(
           child: Padding(
             padding: const EdgeInsets.all(16),
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  crossAxisAlignment: WrapCrossAlignment.center,
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     const Text(
                       'Hutang per Pelanggan',
@@ -481,49 +383,112 @@ class _HutangPelangganSectionState extends State<_HutangPelangganSection> {
                         fontWeight: FontWeight.w700,
                       ),
                     ),
-                    if (names.isNotEmpty)
-                      OutlinedButton.icon(
-                        onPressed: () => ConfirmationDialog.show(
-                          context: context,
-                          title: 'Hapus Semua Hutang',
-                          message:
-                              'Hapus semua riwayat hutang semua pelanggan?',
-                          isDestructive: true,
-                          onConfirm: () async {
-                            for (final n in names) {
-                              await ledgerProv.deleteCustomerLedger(n);
-                            }
-                          },
-                        ),
-                        icon: const Icon(Icons.delete_outline, size: 16),
-                        label: const Text('Hapus Semua'),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: AppTheme.debt,
-                          side: const BorderSide(color: AppTheme.debt),
-                          visualDensity: VisualDensity.compact,
-                          textStyle: const TextStyle(fontSize: 12),
-                        ),
+                    Text(
+                      'Total: ${rupiahD(cdbProv.dayTotal)}',
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13,
                       ),
-                    ElevatedButton.icon(
-                      onPressed: () => _showAddDebtDialog(context, ledgerProv),
-                      icon: const Icon(Icons.add, size: 18),
-                      label: const Text('Tambah Hutang'),
                     ),
                   ],
                 ),
                 const SizedBox(height: 12),
-                if (names.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.all(30),
-                    child: Center(
-                      child: Text(
-                        'Tidak ada hutang aktif.',
-                        style: TextStyle(color: AppTheme.inkSoft),
+                if (cdbProv.currentDateBalances.isNotEmpty)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: OutlinedButton.icon(
+                      onPressed: () => ConfirmationDialog.show(
+                        context: context,
+                        title: 'Hapus Semua Hutang',
+                        message:
+                            'Hapus semua catatan hutang untuk hari ini?',
+                        isDestructive: true,
+                        onConfirm: () async {
+                          for (final b in cdbProv.currentDateBalances.toList()) {
+                            await cdbProv.deleteEntry(b.id!);
+                          }
+                          widget.onSaved?.call();
+                        },
+                      ),
+                      icon: const Icon(Icons.delete_outline, size: 16),
+                      label: const Text('Hapus Semua'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppTheme.debt,
+                        side: const BorderSide(color: AppTheme.debt),
+                        visualDensity: VisualDensity.compact,
+                        textStyle: const TextStyle(fontSize: 12),
                       ),
                     ),
+                  ),
+                const SizedBox(height: 12),
+                if (isMobile)
+                  Column(
+                    children: [
+                      TextField(
+                        controller: _addNameController,
+                        textInputAction: TextInputAction.next,
+                        decoration: const InputDecoration(
+                          labelText: 'Nama Pelanggan',
+                          isDense: true,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: _addAmountController,
+                        keyboardType: TextInputType.number,
+                        textInputAction: TextInputAction.done,
+                        inputFormatters: [RupiahInputFormatter()],
+                        decoration: const InputDecoration(
+                          labelText: 'Jumlah (Rp)',
+                          isDense: true,
+                        ),
+                        onSubmitted: (_) => _save(),
+                      ),
+                      const SizedBox(height: 12),
+                      ElevatedButton(
+                        onPressed: _save,
+                        child: const Text('Tambah Hutang'),
+                      ),
+                    ],
                   )
                 else
-                  _buildTransposedTable(ledgerProv, names),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _addNameController,
+                          textInputAction: TextInputAction.next,
+                          decoration: const InputDecoration(
+                            labelText: 'Nama Pelanggan',
+                            isDense: true,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextField(
+                          controller: _addAmountController,
+                          keyboardType: TextInputType.number,
+                          textInputAction: TextInputAction.done,
+                          inputFormatters: [RupiahInputFormatter()],
+                          decoration: const InputDecoration(
+                            labelText: 'Jumlah (Rp)',
+                            isDense: true,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      ElevatedButton(
+                        onPressed: _save,
+                        child: const Text('Tambah Hutang'),
+                      ),
+                    ],
+                  ),
+                if (cdbProv.currentDateBalances.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  _buildList(cdbProv),
+                ],
               ],
             ),
           ),
@@ -532,356 +497,293 @@ class _HutangPelangganSectionState extends State<_HutangPelangganSection> {
     );
   }
 
-  Widget _buildTransposedTable(
-    CustomerLedgerProvider ledgerProv,
-    List<String> names,
-  ) {
-    final customerDebts = <String, List<Map<String, dynamic>>>{};
-    final totals = <String, int>{};
+  void _save() async {
+    final name = _addNameController.text.trim();
+    final amount =
+        int.tryParse(_addAmountController.text.split(',').first.replaceAll('.', '')) ?? 0;
+    if (name.isEmpty || amount <= 0) return;
+    final selectedDate = context.read<TabProvider>().selectedDate;
+    await context.read<CustomerDailyBalanceProvider>().addCustomDebt(
+          selectedDate,
+          name,
+          amount,
+        );
+    widget.onSaved?.call();
+    _addNameController.clear();
+    _addAmountController.clear();
+  }
 
-    for (final name in names) {
-      final processed = ledgerProv.processCustomerDebts(name);
-      final activeDebts = processed['activeDebts'] as List<dynamic>;
-      final totalSisa = processed['totalSisa'] as int;
-      totals[name] = totalSisa;
-      final debts = activeDebts
-          .map((d) => {
-                'id': d['id'],
-                'remaining': (d['remaining'] as num).toInt(),
-              })
-          .toList()
-        ..sort((a, b) => (a['id'] as int).compareTo(b['id'] as int));
-      customerDebts[name] = debts;
+  void _startEdit(CustomerDailyBalance bal, String field, String initialValue) {
+    setState(() {
+      _editingId = bal.id;
+      _editingField = field;
+      _editingControllers[field] = TextEditingController(text: initialValue);
+    });
+  }
+
+  void _cancelEdit() {
+    setState(() {
+      _editingControllers.clear();
+      _editingId = null;
+      _editingField = null;
+    });
+  }
+
+  Future<void> _saveInlineEdit(
+    CustomerDailyBalance bal,
+    String field,
+    CustomerDailyBalanceProvider cdbProv,
+  ) async {
+    final controller = _editingControllers[field];
+    if (controller == null) return;
+    final name = field == 'name' ? controller.text.trim() : bal.name;
+    final amount = field == 'amount'
+        ? int.tryParse(controller.text.split(',').first.replaceAll('.', '')) ?? 0
+        : bal.amount;
+    if (name.isEmpty || amount <= 0) {
+      _cancelEdit();
+      return;
     }
-
-    final grandTotal = totals.values.fold<int>(0, (sum, v) => sum + v);
-
-    const footerColor = Color(0xFFEDEBF5);
-
-    const headerH = 34.0;
-    const nameW = 200.0;
-    const totalW = 130.0;
-    const rowH = 48.0;
-    const namePadding = 24.0;
-    const nameIconBlock = 70.0;
-
-    final isMobile = AppTheme.isMobile(context);
-    late final double nameColW;
-    late final double nameTextW;
-    late final List<double> rowHeights;
-
-    if (isMobile) {
-      var longest = 0.0;
-      for (final n in names) {
-        final tp = TextPainter(
-          text: TextSpan(
-            text: n,
-            style: const TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              height: 1.2,
-            ),
-          ),
-          textDirection: TextDirection.ltr,
-        )..layout(maxWidth: double.infinity);
-        longest = math.max(longest, tp.width);
-      }
-      nameTextW = math.max(longest, 60);
-      nameColW = nameTextW + namePadding + nameIconBlock;
-      rowHeights = [for (final _ in names) rowH];
+    final selectedDate = context.read<TabProvider>().selectedDate;
+    if (bal.date == selectedDate) {
+      await cdbProv.updateEntry(bal.id!, amount: amount, name: name);
     } else {
-      nameColW = nameW;
-      nameTextW = math.max(40.0, nameW - namePadding - nameIconBlock);
-      double estimateNameHeight(String name) {
-        final tp = TextPainter(
-          text: TextSpan(
-            text: name,
-            style: const TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              height: 1.2,
+      await cdbProv.addCustomDebt(selectedDate, name, amount);
+    }
+    widget.onSaved?.call();
+    if (mounted) {
+      setState(() {
+        _editingControllers.clear();
+        _editingId = null;
+        _editingField = null;
+      });
+    }
+  }
+
+  Widget _editableCell(
+    CustomerDailyBalance bal,
+    String field,
+    String display,
+    CustomerDailyBalanceProvider cdbProv, {
+    required String editValue,
+    bool bold = false,
+    TextStyle? style,
+    TextAlign textAlign = TextAlign.left,
+  }) {
+    if (_editingId == bal.id && _editingField == field) {
+      final controller = _editingControllers[field]!;
+      final isAmount = field == 'amount';
+      return Row(
+        children: [
+          Expanded(
+            child: TextField(
+              controller: controller,
+              autofocus: true,
+              keyboardType: isAmount
+                  ? TextInputType.number
+                  : TextInputType.text,
+              inputFormatters: isAmount ? [RupiahInputFormatter()] : null,
+              textAlign: TextAlign.left,
+              style: style ?? const TextStyle(fontSize: 11),
+              decoration: const InputDecoration(
+                isDense: true,
+                contentPadding: EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+              ),
+              onTapOutside: (_) => FocusManager.instance.primaryFocus?.unfocus(),
+              onSubmitted: (_) => _saveInlineEdit(bal, field, cdbProv),
             ),
           ),
-          textDirection: TextDirection.ltr,
-          maxLines: null,
-        )..layout(maxWidth: nameTextW);
-        return math.max(rowH, tp.height + 12);
-      }
-
-      rowHeights = [for (final name in names) estimateNameHeight(name)];
+          SizedBox(
+            width: 28,
+            child: IconButton(
+              icon: const Icon(Icons.check, size: 18, color: AppTheme.paid),
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              onPressed: () => _saveInlineEdit(bal, field, cdbProv),
+            ),
+          ),
+        ],
+      );
     }
+    return GestureDetector(
+      onTap: () => _startEdit(bal, field, editValue),
+      child: Text(
+        display,
+        style: style ??
+            TextStyle(
+              fontSize: 11,
+              fontWeight: bold ? FontWeight.w700 : FontWeight.w600,
+              color: AppTheme.accent,
+            ),
+        textAlign: textAlign,
+        softWrap: true,
+        maxLines: null,
+      ),
+    );
+  }
 
-    final nameColumn = SizedBox(
-      width: nameColW,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+  Widget _buildList(CustomerDailyBalanceProvider cdbProv) {
+    final isMobile = AppTheme.isMobile(context);
+    const double cDate = 90;
+    final double cName = isMobile ? 110 : 130;
+    final double cAmt = isMobile ? 110 : 130;
+    final double cPrint = isMobile ? 30 : 40;
+    final double cDel = isMobile ? 28 : 40;
+    final double tableW = isMobile
+        ? cName + cAmt + cPrint + cDel + 24
+        : cDate + cName + cAmt + cPrint + cDel + 24;
+
+    final headerRow = Container(
+      color: AppTheme.ink.withValues(alpha: 0.08),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Row(
         children: [
-          Container(
-            color: AppTheme.ink.withValues(alpha: 0.08),
-            height: headerH,
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            alignment: Alignment.centerLeft,
+          if (!isMobile)
+            SizedBox(
+              width: cDate,
+              child: const Text(
+                'TANGGAL',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  color: AppTheme.inkSoft,
+                ),
+              ),
+            ),
+          SizedBox(
+            width: cName,
             child: const Text(
               'NAMA',
               style: TextStyle(
-                fontSize: 11,
+                fontSize: 10,
                 fontWeight: FontWeight.w700,
                 color: AppTheme.inkSoft,
               ),
             ),
           ),
-          for (final entry in names.asMap().entries)
-            Container(
-              height: rowHeights[entry.key],
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              alignment: Alignment.centerLeft,
-              decoration: BoxDecoration(
-                color: entry.key.isEven
-                    ? Colors.transparent
-                    : const Color(0xFFFAFAFA),
-                border: const Border(
-                  bottom: BorderSide(color: AppTheme.line, width: 0.5),
-                ),
-              ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      entry.value,
-                      maxLines: isMobile ? 1 : null,
-                      overflow: isMobile ? TextOverflow.visible : null,
-                      style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        height: 1.2,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 4),
-                  GestureDetector(
-                    onTap: () => _showAddDebtDialog(
-                      context,
-                      ledgerProv,
-                      presetName: entry.value,
-                    ),
-                    child: Container(
-                      padding: const EdgeInsets.all(3),
-                      decoration: BoxDecoration(
-                        color: AppTheme.accent,
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: const Icon(
-                        Icons.add,
-                        size: 14,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  GestureDetector(
-                    onTap: () => ConfirmationDialog.show(
-                      context: context,
-                      title: 'Hapus Semua Hutang',
-                      message:
-                          'Hapus semua riwayat hutang $entry.value?',
-                      isDestructive: true,
-                      onConfirm: () async {
-                        await ledgerProv.deleteCustomerLedger(entry.value);
-                      },
-                    ),
-                    child: const Icon(
-                      Icons.delete_outline,
-                      size: 16,
-                      color: AppTheme.debt,
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  GestureDetector(
-                    onTap: () => _printDebtReceipt(
-                      context,
-                      entry.value,
-                      totals[entry.value] ?? 0,
-                    ),
-                    child: const Icon(
-                      Icons.print,
-                      size: 18,
-                      color: AppTheme.accent,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          Container(
-            height: rowH,
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            alignment: Alignment.centerLeft,
-            decoration: const BoxDecoration(
-              color: footerColor,
-              border: Border(
-                top: BorderSide(color: AppTheme.line, width: 0.5),
-              ),
-            ),
+          SizedBox(
+            width: cAmt,
             child: const Text(
-              'TOTAL',
+              'JUMLAH',
               style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.w800,
-                color: AppTheme.ink,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-
-    final hutangColumn = Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          color: AppTheme.ink.withValues(alpha: 0.08),
-          height: headerH,
-          alignment: Alignment.centerLeft,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: const Text(
-            'HUTANG',
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w700,
-              color: AppTheme.inkSoft,
-            ),
-          ),
-        ),
-        for (final entry in names.asMap().entries)
-          Container(
-            height: rowHeights[entry.key],
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            color: entry.key.isEven ? Colors.transparent : const Color(0xFFFAFAFA),
-            alignment: Alignment.centerLeft,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                for (final debt in customerDebts[entry.value] ?? [])
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                    child: _editableSisaCell(
-                      debt['id'] as int?,
-                      debt['remaining'] as int,
-                      alignLeft: true,
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        Container(
-          height: rowH,
-          alignment: Alignment.centerLeft,
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: const BoxDecoration(
-            color: footerColor,
-            border: Border(
-              top: BorderSide(color: AppTheme.line, width: 0.5),
-            ),
-          ),
-          child: Text(
-            rupiahD(grandTotal),
-            style: const TextStyle(
-              fontFamily: 'monospace',
-              fontSize: 13,
-              fontWeight: FontWeight.w800,
-              color: AppTheme.debt,
-            ),
-          ),
-        ),
-      ],
-    );
-
-    final totalColumn = SizedBox(
-      width: totalW,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Container(
-            color: AppTheme.ink.withValues(alpha: 0.08),
-            height: headerH,
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            alignment: Alignment.centerRight,
-            child: const Text(
-              'TOTAL',
-              style: TextStyle(
-                fontSize: 11,
+                fontSize: 10,
                 fontWeight: FontWeight.w700,
                 color: AppTheme.inkSoft,
               ),
             ),
           ),
-          for (final entry in names.asMap().entries)
-            Container(
-              color: entry.key.isEven
-                  ? Colors.transparent
-                  : const Color(0xFFFAFAFA),
-              height: rowHeights[entry.key],
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              alignment: Alignment.centerRight,
-              child: Text(
-                rupiahD(totals[entry.value] ?? 0),
-                style: const TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 13,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-          Container(
-            height: rowH,
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            alignment: Alignment.centerRight,
-            decoration: const BoxDecoration(
-              color: footerColor,
-              border: Border(
-                top: BorderSide(color: AppTheme.line, width: 0.5),
-              ),
-            ),
-            child: Text(
-              rupiahD(grandTotal),
-              style: const TextStyle(
-                fontFamily: 'monospace',
-                fontSize: 13,
-                fontWeight: FontWeight.w800,
-                color: AppTheme.debt,
-              ),
-            ),
-          ),
+          SizedBox(width: cPrint),
+          SizedBox(width: cDel),
         ],
       ),
     );
 
+    final dataRows = cdbProv.currentDateBalances.asMap().entries.map((entry) {
+      final bal = entry.value;
+      return Container(
+        decoration: const BoxDecoration(
+          border: Border(
+            bottom: BorderSide(color: AppTheme.line, width: 0.5),
+          ),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        child: Row(
+          children: [
+            if (!isMobile)
+              SizedBox(
+                width: cDate,
+                child: Text(
+                  fmtDate(bal.date),
+                  style: const TextStyle(fontSize: 11),
+                ),
+              ),
+            SizedBox(
+              width: cName,
+              child: _editableCell(
+                bal,
+                'name',
+                bal.name,
+                cdbProv,
+                editValue: bal.name,
+              ),
+            ),
+            SizedBox(
+              width: cAmt,
+              child: _editableCell(
+                bal,
+                'amount',
+                rupiahD(bal.amount),
+                cdbProv,
+                editValue: bal.amount.toString(),
+                bold: true,
+                textAlign: TextAlign.left,
+              ),
+            ),
+            SizedBox(
+              width: cPrint,
+              child: GestureDetector(
+                onTap: () =>
+                    _printDebtReceipt(context, bal.name, bal.amount),
+                child: const Icon(
+                  Icons.print,
+                  size: 16,
+                  color: AppTheme.accent,
+                ),
+              ),
+            ),
+            SizedBox(
+              width: cDel,
+              child: IconButton(
+                icon: const Icon(
+                  Icons.delete_outline,
+                  size: 16,
+                  color: AppTheme.debt,
+                ),
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                onPressed: () => ConfirmationDialog.show(
+                  context: context,
+                  title: 'Hapus Hutang',
+                  message:
+                      'Hapus catatan hutang ${bal.name} untuk hari ini?',
+                  isDestructive: true,
+                  onConfirm: () async {
+                    await cdbProv.deleteEntry(bal.id!);
+                    widget.onSaved?.call();
+                  },
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    });
+
+    final tableContent = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [headerRow, ...dataRows],
+    );
+
+    if (isMobile) {
+      return Container(
+        decoration: BoxDecoration(
+          border: Border.all(color: AppTheme.line),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: SizedBox(width: tableW, child: tableContent),
+        ),
+      );
+    }
     return Container(
       decoration: BoxDecoration(
         border: Border.all(color: AppTheme.line),
         borderRadius: BorderRadius.circular(8),
       ),
       clipBehavior: Clip.antiAlias,
-      child: isMobile
-          ? SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [nameColumn, hutangColumn, totalColumn],
-              ),
-            )
-          : Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                nameColumn,
-                Expanded(
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: hutangColumn,
-                  ),
-                ),
-                totalColumn,
-              ],
-            ),
+      child: tableContent,
     );
   }
 
@@ -938,121 +840,6 @@ class _HutangPelangganSectionState extends State<_HutangPelangganSection> {
           result ? 'Struk hutang $customerName tercetak' : 'Gagal cetak struk',
         ),
         backgroundColor: result ? AppTheme.paid : AppTheme.debt,
-      ),
-    );
-  }
-
-  void _showAddDebtDialog(
-    BuildContext context,
-    CustomerLedgerProvider prov, {
-    String? presetName,
-  }) {
-    _addNameController.text = presetName ?? '';
-    _addAmountController.clear();
-    _addNoteController.clear();
-    final today = context.read<TabProvider>().selectedDate;
-    final txProv = context.read<TransactionProvider>();
-    if (txProv.customerNames.isEmpty) {
-      txProv.loadCustomerNames();
-    }
-
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(
-          presetName != null
-              ? 'Tambah Hutang untuk $presetName'
-              : 'Tambah Hutang Baru',
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (presetName == null)
-              Autocomplete<String>(
-                optionsBuilder: (TextEditingValue textEditingValue) {
-                  if (textEditingValue.text.isEmpty) {
-                    return const Iterable<String>.empty();
-                  }
-                  final typed = textEditingValue.text.trim().toLowerCase();
-                  final matches = txProv.customerNames.where(
-                    (name) => name.toLowerCase().contains(typed),
-                  );
-                  final typedName = textEditingValue.text.trim();
-                  if (typedName.isNotEmpty &&
-                      !matches.any((n) => n.toLowerCase() == typed)) {
-                    return [typedName, ...matches];
-                  }
-                  return matches;
-                },
-                onSelected: (String selection) {
-                  _addNameController.text = selection;
-                },
-                fieldViewBuilder:
-                    (context, controller, focusNode, onSubmitted) {
-                      controller.text = _addNameController.text;
-                      controller.selection = TextSelection.fromPosition(
-                        TextPosition(offset: controller.text.length),
-                      );
-                      controller.addListener(() {
-                        _addNameController.text = controller.text;
-                      });
-                      return TextField(
-                        controller: controller,
-                        focusNode: focusNode,
-                        decoration: const InputDecoration(
-                          labelText: 'Nama Pelanggan',
-                        ),
-                        onSubmitted: (val) {
-                          _addNameController.text = val;
-                        },
-                      );
-                    },
-              ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _addAmountController,
-              keyboardType: TextInputType.number,
-              textInputAction: TextInputAction.next,
-              inputFormatters: [RupiahInputFormatter(allowDecimal: true)],
-              decoration: const InputDecoration(
-                labelText: 'Jumlah Hutang (Rp)',
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _addNoteController,
-              textInputAction: TextInputAction.done,
-              decoration: const InputDecoration(
-                labelText: 'Catatan (opsional)',
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Batal'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              final name = _addNameController.text.trim();
-              final amount =
-                  int.tryParse(_addAmountController.text.split(',').first.replaceAll('.', '')) ??
-                  0;
-              if (name.isNotEmpty && amount > 0) {
-                await prov.addDebt(
-                  today,
-                  name,
-                  amount,
-                  _addNoteController.text,
-                );
-                widget.onSaved?.call();
-                if (ctx.mounted) Navigator.of(ctx).pop();
-              }
-            },
-            child: const Text('Simpan'),
-          ),
-        ],
       ),
     );
   }
@@ -3122,10 +2909,11 @@ class _RincianHarianSectionState extends State<_RincianHarianSection> {
     final srProv = context.watch<StockRemainingProvider>();
     final ledgerProv = context.watch<CustomerLedgerProvider>();
     final plProv = context.watch<PersonalLedgerProvider>();
+    final cdbProv = context.watch<CustomerDailyBalanceProvider>();
     final ringProv = context.watch<RingkasanProvider>();
 
     final newSig =
-        '${oilProv.monthTotal}|${smProv.monthTotal}|${srProv.monthTotal}|${plProv.monthTotal}|${ledgerProv.balances.values.fold<int>(0, (s, v) => s + (v > 0 ? v : 0))}';
+        '${oilProv.monthTotal}|${smProv.monthTotal}|${srProv.monthTotal}|${plProv.monthTotal}|${cdbProv.dayTotal}|${ledgerProv.balances.values.fold<int>(0, (s, v) => s + (v > 0 ? v : 0))}';
     if (newSig != _sig) {
       _sig = newSig;
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -3148,9 +2936,7 @@ class _RincianHarianSectionState extends State<_RincianHarianSection> {
     final daily = ringProv.daily;
     final dStockMgmt = daily != null ? (daily['stockMgmt'] as num).toInt() : 0;
     final dRemain = daily != null ? (daily['remain'] as num).toInt() : 0;
-    final dHutangPel = ledgerProv.balances.values
-        .where((v) => v > 0)
-        .fold<int>(0, (sum, v) => sum + v);
+    final dHutangPel = cdbProv.dayTotal;
     final dHutangPri = daily != null ? (daily['hutangPri'] as num).toInt() : 0;
     final totalHari = liveOil + dStockMgmt + dRemain + dHutangPel;
     final saldoHari = totalHari - dHutangPri;

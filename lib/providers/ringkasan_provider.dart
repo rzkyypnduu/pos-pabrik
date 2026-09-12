@@ -65,10 +65,20 @@ class RingkasanProvider extends ChangeNotifier {
         .getLatestStockRemainingsByMonth(range[0], range[1]);
     totalRemain = stockRemains.fold<int>(0, (sum, s) => sum + s.subtotal);
 
-    totalHutangPel = customerBalances.entries.fold<int>(
-      0,
-      (sum, e) => sum + (e.value > 0 ? e.value : 0),
-    );
+    final customerDailyMonth = await DatabaseHelper.instance
+        .getLatestCustomerDailyBalancesByMonth(range[0], range[1]);
+    final hasDailyDebt =
+        customerDailyMonth.every((b) => b.amount == 0) &&
+            customerDailyMonth.isNotEmpty;
+    if (hasDailyDebt || customerDailyMonth.isEmpty) {
+      totalHutangPel = customerBalances.entries.fold<int>(
+        0,
+        (sum, e) => sum + (e.value > 0 ? e.value : 0),
+      );
+    } else {
+      totalHutangPel =
+          customerDailyMonth.fold<int>(0, (sum, b) => sum + b.amount);
+    }
 
     final personalLedgers = await DatabaseHelper.instance
         .getLatestPersonalLedgersByMonth(range[0], range[1]);
@@ -92,6 +102,15 @@ class RingkasanProvider extends ChangeNotifier {
         range[0],
         selectedDate,
       );
+      final dayCustomerDaily = await DatabaseHelper.instance
+          .getLatestCustomerDailyBalancesByMonth(range[0], selectedDate);
+      final hasDayDaily = dayCustomerDaily.any((b) => b.amount > 0);
+      final dHutangPel = hasDayDaily
+          ? dayCustomerDaily.fold<int>(0, (sum, b) => sum + b.amount)
+          : dayLedger.fold<int>(
+              0,
+              (sum, l) => sum + (l.type == 'tambah' ? l.amount : -l.amount),
+            );
       final dayPersonal = await DatabaseHelper.instance
           .getLatestPersonalLedgersByMonth(range[0], selectedDate);
       final daySaldo = await DatabaseHelper.instance
@@ -101,10 +120,7 @@ class RingkasanProvider extends ChangeNotifier {
         'oil': dayOil?.subtotal ?? 0,
         'stockMgmt': dayStockMgmt.fold<int>(0, (sum, s) => sum + s.subtotal),
         'remain': dayRemain.fold<int>(0, (sum, s) => sum + s.subtotal),
-        'hutangPel': dayLedger.fold<int>(
-          0,
-          (sum, l) => sum + (l.type == 'tambah' ? l.amount : -l.amount),
-        ),
+        'hutangPel': dHutangPel,
         'hutangPri': dayPersonal.fold<int>(0, (sum, l) => sum + l.amount),
         'saldo': daySaldo?.result ?? 0,
       };

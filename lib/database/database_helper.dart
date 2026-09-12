@@ -13,6 +13,7 @@ import '../models/stock_management.dart';
 import '../models/stock_remaining.dart';
 import '../models/customer_ledger.dart';
 import '../models/personal_ledger.dart';
+import '../models/customer_daily_balance.dart';
 import '../models/saldo_deduction.dart';
 import '../models/expense.dart';
 
@@ -111,7 +112,7 @@ class DatabaseHelper {
     }
     return await openDatabase(
       path,
-      version: 5,
+      version: 6,
       onCreate: _createDB,
       onUpgrade: _upgradeDB,
     );
@@ -251,6 +252,7 @@ class DatabaseHelper {
       'stock_remainings',
       'personal_ledgers',
       'saldo_deductions',
+      'customer_daily_balances',
     ];
     final db = await database;
     for (final table in tables) {
@@ -397,7 +399,8 @@ class DatabaseHelper {
       if (maps.isNotEmpty) return true;
     } else if (table == 'stock_managements' ||
         table == 'stock_remainings' ||
-        table == 'personal_ledgers') {
+        table == 'personal_ledgers' ||
+        table == 'customer_daily_balances') {
       final name = row['name'] as String?;
       if (name == null || name.isEmpty) return false;
       final maps = await db.query(
@@ -508,6 +511,11 @@ class DatabaseHelper {
       }
       await _createSyncTables(db);
     }
+    if (oldVersion < 6) {
+      await db.execute(
+        '''CREATE TABLE IF NOT EXISTS customer_daily_balances (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, name TEXT NOT NULL, amount INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT, uuid TEXT, deleted_at TEXT)''',
+      );
+    }
   }
 
   Future<void> _createSyncTables(Database db) async {
@@ -549,6 +557,9 @@ class DatabaseHelper {
     );
     await db.execute(
       '''CREATE TABLE expenses (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, amount INTEGER DEFAULT 0, note TEXT, created_at TEXT, updated_at TEXT, uuid TEXT, deleted_at TEXT)''',
+    );
+    await db.execute(
+      '''CREATE TABLE customer_daily_balances (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, name TEXT NOT NULL, amount INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT, uuid TEXT, deleted_at TEXT)''',
     );
     await _createSyncTables(db);
   }
@@ -1507,6 +1518,182 @@ class DatabaseHelper {
     return id;
   }
 
+  // ==================== CUSTOMER DAILY BALANCES ====================
+  Future<int> insertCustomerDailyBalance(CustomerDailyBalance bal) async {
+    final db = await database;
+    final data = bal.toMap();
+    data.remove('id');
+    final uuid = newUuid();
+    data['uuid'] = uuid;
+    data['created_at'] = _now();
+    data['updated_at'] = _now();
+    final id = await db.insert('customer_daily_balances', data);
+    await _enqueueOutbox('customer_daily_balances', 'insert', data, uuid);
+    return id;
+  }
+
+  Future<List<CustomerDailyBalance>> getCustomerDailyBalancesByMonth(
+    String startDate,
+    String endDate,
+  ) async {
+    final db = await database;
+    final maps = await db.query(
+      'customer_daily_balances',
+      where: 'date BETWEEN ? AND ?',
+      whereArgs: [startDate, endDate],
+      orderBy: 'date ASC, id ASC',
+    );
+    return maps.map((m) => CustomerDailyBalance.fromMap(m)).toList();
+  }
+
+  Future<List<CustomerDailyBalance>> getCustomerDailyBalancesByDate(
+    String date,
+  ) async {
+    final db = await database;
+    final maps = await db.query(
+      'customer_daily_balances',
+      where: 'date = ?',
+      whereArgs: [date],
+      orderBy: 'date ASC, id ASC',
+    );
+    return maps.map((m) => CustomerDailyBalance.fromMap(m)).toList();
+  }
+
+  Future<List<CustomerDailyBalance>> getLatestCustomerDailyBalances(
+    String beforeDate,
+  ) async {
+    final db = await database;
+    final maps = await db.query(
+      'customer_daily_balances',
+      where: 'date < ?',
+      whereArgs: [beforeDate],
+      orderBy: 'date DESC, id DESC',
+    );
+    return maps.map((m) => CustomerDailyBalance.fromMap(m)).toList();
+  }
+
+  /// Saldo hutang pelanggan outstanding semua riwayat dari customer_ledgers
+  /// (dipakai untuk menyemai hari pertama copy & putus jika belum ada catatan).
+  Future<Map<String, int>> getOutstandingCustomerBalances() async {
+    final db = await database;
+    final maps = await db.query(
+      'customer_ledgers',
+      where: 'deleted_at IS NULL',
+      orderBy: 'date ASC, id ASC',
+    );
+    final byName = <String, int>{};
+    for (final m in maps) {
+      final name = m['name'] as String?;
+      final amount = (m['amount'] as num?)?.toInt() ?? 0;
+      if (name == null || name.isEmpty) continue;
+      final current = byName[name] ?? 0;
+      byName[name] = current + (m['type'] == 'bayar' ? -amount : amount);
+    }
+    return byName;
+  }
+
+  /// Copy & putus hutang pelanggan: jika [date] belum punya catatan, salin
+  /// saldo terakhir tiap nama menjadi milik [date] (id baru). Nama yang belum
+  /// punya catatan harian disemai dari saldo outstanding customer_ledgers.
+  Future<List<CustomerDailyBalance>> materializeCustomerDailyBalances(
+    String date,
+  ) async {
+    final existing = await getCustomerDailyBalancesByDate(date);
+    if (existing.isNotEmpty) {
+      await markDayMaterialized('customer_daily_balances', date);
+      return existing;
+    }
+    if (await isDayMaterialized('customer_daily_balances', date)) return [];
+    final latestAll = await getLatestCustomerDailyBalances(date);
+    final byName = <String, CustomerDailyBalance>{};
+    for (final l in latestAll) {
+      byName.putIfAbsent(l.name, () => l);
+    }
+    final seeds = await getOutstandingCustomerBalances();
+    final names = <String>{...byName.keys};
+    for (final entry in seeds.entries) {
+      if (entry.value > 0) names.add(entry.key);
+    }
+    final sortedNames = names.toList()..sort();
+    for (final name in sortedNames) {
+      final src = byName[name];
+      final amount = src != null
+          ? src.amount
+          : (seeds[name] ?? 0);
+      if (amount <= 0) continue;
+      await insertCustomerDailyBalance(CustomerDailyBalance(
+        date: date,
+        name: name,
+        amount: amount,
+      ));
+    }
+    await markDayMaterialized('customer_daily_balances', date);
+    return getCustomerDailyBalancesByDate(date);
+  }
+
+  /// Saldo harian hutang pelanggan TERAKHIR per nama dalam rentang bulan.
+  Future<List<CustomerDailyBalance>> getLatestCustomerDailyBalancesByMonth(
+    String startDate,
+    String endDate,
+  ) async {
+    final all = await getCustomerDailyBalancesByMonth(startDate, endDate);
+    final byName = <String, CustomerDailyBalance>{};
+    for (final l in all) {
+      final cur = byName[l.name];
+      if (cur == null || (l.date).compareTo(cur.date) > 0) {
+        byName[l.name] = l;
+      }
+    }
+    return byName.values.toList();
+  }
+
+  Future<int> deleteCustomerDailyBalance(int id) async {
+    final db = await database;
+    final dayRow = await db.query(
+      'customer_daily_balances',
+      columns: ['date', 'name'],
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    final day = dayRow.isNotEmpty ? dayRow.first['date'] as String? : null;
+    final name = dayRow.isNotEmpty ? dayRow.first['name'] as String? : null;
+    await _enqueueDeleteById('customer_daily_balances', id);
+    final affected = await db.delete(
+      'customer_daily_balances',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+    if (affected > 0 && day != null) {
+      await markSlotDeleted('customer_daily_balances', day, name);
+      final left = await db.query(
+        'customer_daily_balances',
+        where: 'date = ?',
+        whereArgs: [day],
+      );
+      if (left.isEmpty) await markDayMaterialized('customer_daily_balances', day);
+    }
+    return affected;
+  }
+
+  Future<int> updateCustomerDailyBalance(CustomerDailyBalance bal) async {
+    final db = await database;
+    final data = bal.toMap();
+    data.remove('id');
+    data.remove('date');
+    data.remove('created_at');
+    data['updated_at'] = _now();
+    final id = await db.update(
+      'customer_daily_balances',
+      data,
+      where: 'id = ?',
+      whereArgs: [bal.id],
+    );
+    if (bal.id != null) {
+      await _enqueueRow('customer_daily_balances', 'update', bal.id!);
+    }
+    return id;
+  }
+
   // ==================== SALDO DEDUCTIONS ====================
   Future<int> insertSaldoDeduction(SaldoDeduction saldo) async {
     final db = await database;
@@ -1737,6 +1924,10 @@ class DatabaseHelper {
       startDate,
       endDate,
     ]);
+    await _enqueueBulkDelete('customer_daily_balances', 'date BETWEEN ? AND ?', [
+      startDate,
+      endDate,
+    ]);
     await _enqueueBulkDelete('saldo_deductions', 'date BETWEEN ? AND ?', [
       startDate,
       endDate,
@@ -1772,6 +1963,11 @@ class DatabaseHelper {
       whereArgs: [startDate, endDate],
     );
     await db.delete(
+      'customer_daily_balances',
+      where: 'date BETWEEN ? AND ?',
+      whereArgs: [startDate, endDate],
+    );
+    await db.delete(
       'saldo_deductions',
       where: 'date BETWEEN ? AND ?',
       whereArgs: [startDate, endDate],
@@ -1784,6 +1980,7 @@ class DatabaseHelper {
     await _enqueueBulkDelete('sales', null, null);
     await _enqueueBulkDelete('customer_ledgers', null, null);
     await _enqueueBulkDelete('personal_ledgers', null, null);
+    await _enqueueBulkDelete('customer_daily_balances', null, null);
     await _enqueueBulkDelete('oil_stocks', null, null);
     await _enqueueBulkDelete('stock_managements', null, null);
     await _enqueueBulkDelete('stock_remainings', null, null);
@@ -1794,6 +1991,7 @@ class DatabaseHelper {
     await db.delete('sales');
     await db.delete('customer_ledgers');
     await db.delete('personal_ledgers');
+    await db.delete('customer_daily_balances');
     await db.delete('oil_stocks');
     await db.delete('stock_managements');
     await db.delete('stock_remainings');
