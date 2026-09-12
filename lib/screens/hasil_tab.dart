@@ -554,6 +554,10 @@ class _HutangPelangganSectionState extends State<_HutangPelangganSection> {
       customerDebts[name] = debts;
     }
 
+    final grandTotal = totals.values.fold<int>(0, (sum, v) => sum + v);
+
+    const footerColor = Color(0xFFEDEBF5);
+
     const headerH = 34.0;
     const nameW = 200.0;
     const totalW = 130.0;
@@ -707,6 +711,25 @@ class _HutangPelangganSectionState extends State<_HutangPelangganSection> {
                 ],
               ),
             ),
+          Container(
+            height: rowH,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            alignment: Alignment.centerLeft,
+            decoration: const BoxDecoration(
+              color: footerColor,
+              border: Border(
+                top: BorderSide(color: AppTheme.line, width: 0.5),
+              ),
+            ),
+            child: const Text(
+              'TOTAL',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+                color: AppTheme.ink,
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -749,6 +772,26 @@ class _HutangPelangganSectionState extends State<_HutangPelangganSection> {
               ],
             ),
           ),
+        Container(
+          height: rowH,
+          alignment: Alignment.centerLeft,
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: const BoxDecoration(
+            color: footerColor,
+            border: Border(
+              top: BorderSide(color: AppTheme.line, width: 0.5),
+            ),
+          ),
+          child: Text(
+            rupiahD(grandTotal),
+            style: const TextStyle(
+              fontFamily: 'monospace',
+              fontSize: 13,
+              fontWeight: FontWeight.w800,
+              color: AppTheme.debt,
+            ),
+          ),
+        ),
       ],
     );
 
@@ -788,6 +831,26 @@ class _HutangPelangganSectionState extends State<_HutangPelangganSection> {
                 ),
               ),
             ),
+          Container(
+            height: rowH,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            alignment: Alignment.centerRight,
+            decoration: const BoxDecoration(
+              color: footerColor,
+              border: Border(
+                top: BorderSide(color: AppTheme.line, width: 0.5),
+              ),
+            ),
+            child: Text(
+              rupiahD(grandTotal),
+              style: const TextStyle(
+                fontFamily: 'monospace',
+                fontSize: 13,
+                fontWeight: FontWeight.w800,
+                color: AppTheme.debt,
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -3085,12 +3148,9 @@ class _RincianHarianSectionState extends State<_RincianHarianSection> {
     final daily = ringProv.daily;
     final dStockMgmt = daily != null ? (daily['stockMgmt'] as num).toInt() : 0;
     final dRemain = daily != null ? (daily['remain'] as num).toInt() : 0;
-    final debtors = ledgerProv.balances.entries
-        .where((e) => e.value > 0)
-        .toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
-    final dHutangPel =
-        debtors.fold<int>(0, (sum, e) => sum + e.value);
+    final dHutangPel = ledgerProv.balances.values
+        .where((v) => v > 0)
+        .fold<int>(0, (sum, v) => sum + v);
     final dHutangPri = daily != null ? (daily['hutangPri'] as num).toInt() : 0;
     final totalHari = liveOil + dStockMgmt + dRemain + dHutangPel;
     final saldoHari = totalHari - dHutangPri;
@@ -3115,60 +3175,6 @@ class _RincianHarianSectionState extends State<_RincianHarianSection> {
             const Divider(height: 20),
             _dailyRow('Saldo', rupiahD(saldoHari)),
             _dailyRow('TOTAL', rupiahD(totalAkhir), bold: true),
-            const Divider(height: 24),
-            const Padding(
-              padding: EdgeInsets.only(bottom: 8),
-              child: Text(
-                'Hutang per Pelanggan',
-                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
-              ),
-            ),
-            if (debtors.isEmpty)
-              const Text(
-                'Tidak ada hutang pelanggan.',
-                style: TextStyle(fontSize: 13),
-              )
-            else ...[
-              ...debtors.take(20).map(
-                    (e) => Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 2),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Flexible(
-                            child: Text(
-                              e.key,
-                              style: const TextStyle(fontSize: 13),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          Text(
-                            rupiahD(e.value),
-                            style: const TextStyle(
-                              fontFamily: 'monospace',
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              color: AppTheme.debt,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-              if (debtors.length > 20)
-                Center(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: Text(
-                      '… dan ${debtors.length - 20} pelanggan lainnya',
-                      style: const TextStyle(
-                        fontSize: 11,
-                        color: AppTheme.inkSoft,
-                      ),
-                    ),
-                  ),
-                ),
-            ],
           ],
         ),
       ),
