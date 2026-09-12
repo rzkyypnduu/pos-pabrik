@@ -54,6 +54,11 @@ class _TransaksiTabState extends State<TransaksiTab> {
     tabProv.setSelectedDate(date);
     final txProv = context.read<TransactionProvider>();
     final expProv = context.read<ExpenseProvider>();
+    if (_searchQuery.isNotEmpty) {
+      _searchQuery = '';
+      _searchCtrl.clear();
+      txProv.clearSearchResults();
+    }
     txProv.loadDaySales(date);
     expProv.loadDayExpenses(date);
     _loadMonth(txProv, expProv, date);
@@ -92,7 +97,8 @@ class _TransaksiTabState extends State<TransaksiTab> {
               controller: _searchCtrl,
               onChanged: (v) {
                 setState(() => _searchQuery = v);
-                txProv.searchSales(v);
+                final date = context.read<TabProvider>().selectedDate;
+                txProv.searchSales(v, date);
               },
               decoration: InputDecoration(
                 hintText: 'Ketik nama pelanggan...',
@@ -328,6 +334,10 @@ class _TransaksiTabState extends State<TransaksiTab> {
                     ),
                     const SizedBox(height: 10),
                     newTxButton,
+                    if (AppTheme.isMobile(context)) ...[
+                      const SizedBox(height: 10),
+                      _buildSearchCard(context),
+                    ],
                   ],
                 );
               }
@@ -653,10 +663,6 @@ class _TransaksiTabState extends State<TransaksiTab> {
                         ),
                 ),
                 const SizedBox(height: 16),
-                if (isMobile) ...[
-                  const SizedBox(height: 16),
-                  _buildSearchCard(context),
-                ],
 
                 // Expense
                 Card(

@@ -573,14 +573,14 @@ class DatabaseHelper {
     return maps.map((m) => Sale.fromMap(m)).toList();
   }
 
-  /// Cari transaksi berdasarkan nama pelanggan (LIKE, case-insensitive).
-  Future<List<Sale>> searchSales(String query) async {
+  /// Cari transaksi berdasarkan nama pelanggan pada satu tanggal.
+  Future<List<Sale>> searchSales(String date, String query) async {
     final db = await database;
     final maps = await db.query(
       'sales',
-      where: 'name LIKE ? COLLATE NOCASE',
-      whereArgs: ['%${query.trim()}%'],
-      orderBy: 'date DESC, id DESC',
+      where: 'date = ? AND name LIKE ? COLLATE NOCASE',
+      whereArgs: [date, '%${query.trim()}%'],
+      orderBy: 'id ASC',
       limit: 50,
     );
     return maps.map((m) => Sale.fromMap(m)).toList();

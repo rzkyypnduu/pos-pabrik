@@ -126,11 +126,16 @@ class TransactionProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> searchSales(String query) async {
+  void clearSearchResults() {
+    _searchResults = [];
+    notifyListeners();
+  }
+
+  Future<void> searchSales(String query, String date) async {
     if (query.trim().isEmpty) {
       _searchResults = [];
     } else {
-      _searchResults = await DatabaseHelper.instance.searchSales(query);
+      _searchResults = await DatabaseHelper.instance.searchSales(date, query);
     }
     notifyListeners();
   }
