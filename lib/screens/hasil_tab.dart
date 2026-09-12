@@ -3122,7 +3122,6 @@ class _RincianHarianSectionState extends State<_RincianHarianSection> {
     final srProv = context.watch<StockRemainingProvider>();
     final ledgerProv = context.watch<CustomerLedgerProvider>();
     final plProv = context.watch<PersonalLedgerProvider>();
-    final ringProv = context.watch<RingkasanProvider>();
 
     final newSig =
         '${oilProv.monthTotal}|${smProv.monthTotal}|${srProv.monthTotal}|${plProv.monthTotal}|${ledgerProv.balances.values.fold<int>(0, (s, v) => s + (v > 0 ? v : 0))}';
@@ -3145,13 +3144,14 @@ class _RincianHarianSectionState extends State<_RincianHarianSection> {
                 parseNumInput(widget.oilPriceController.text);
     final liveSaldo = parseNumInput(widget.saldoAController.text) -
         parseNumInput(widget.saldoBController.text);
-    final daily = ringProv.daily;
-    final dStockMgmt = daily != null ? (daily['stockMgmt'] as num).toInt() : 0;
-    final dRemain = daily != null ? (daily['remain'] as num).toInt() : 0;
-    final dHutangPel = ledgerProv.balances.values
-        .where((v) => v > 0)
-        .fold<int>(0, (sum, v) => sum + v);
-    final dHutangPri = daily != null ? (daily['hutangPri'] as num).toInt() : 0;
+    final dStockMgmt = smProv.dayTotal;
+    final dRemain = srProv.dayTotal;
+    final dHutangPel = ledgerProv.namesWithDebt.fold<int>(
+      0,
+      (sum, name) =>
+          sum + (ledgerProv.processCustomerDebts(name)['totalSisa'] as int),
+    );
+    final dHutangPri = plProv.dayTotal;
     final totalHari = liveOil + dStockMgmt + dRemain + dHutangPel;
     final saldoHari = totalHari - dHutangPri;
     final totalAkhir = saldoHari - liveSaldo;

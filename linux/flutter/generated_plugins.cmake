@@ -5,7 +5,9 @@
 list(APPEND FLUTTER_PLUGIN_LIST
   file_selector_linux
   flutter_classic_bluetooth
+  gtk
   screen_retriever_linux
+  url_launcher_linux
   window_manager
 )
 
