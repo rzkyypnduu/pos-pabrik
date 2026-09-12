@@ -3085,7 +3085,12 @@ class _RincianHarianSectionState extends State<_RincianHarianSection> {
     final daily = ringProv.daily;
     final dStockMgmt = daily != null ? (daily['stockMgmt'] as num).toInt() : 0;
     final dRemain = daily != null ? (daily['remain'] as num).toInt() : 0;
-    final dHutangPel = daily != null ? (daily['hutangPel'] as num).toInt() : 0;
+    final debtors = ledgerProv.balances.entries
+        .where((e) => e.value > 0)
+        .toList()
+      ..sort((a, b) => b.value.compareTo(a.value));
+    final dHutangPel =
+        debtors.fold<int>(0, (sum, e) => sum + e.value);
     final dHutangPri = daily != null ? (daily['hutangPri'] as num).toInt() : 0;
     final totalHari = liveOil + dStockMgmt + dRemain + dHutangPel;
     final saldoHari = totalHari - dHutangPri;
@@ -3110,6 +3115,60 @@ class _RincianHarianSectionState extends State<_RincianHarianSection> {
             const Divider(height: 20),
             _dailyRow('Saldo', rupiahD(saldoHari)),
             _dailyRow('TOTAL', rupiahD(totalAkhir), bold: true),
+            const Divider(height: 24),
+            const Padding(
+              padding: EdgeInsets.only(bottom: 8),
+              child: Text(
+                'Hutang per Pelanggan',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+              ),
+            ),
+            if (debtors.isEmpty)
+              const Text(
+                'Tidak ada hutang pelanggan.',
+                style: TextStyle(fontSize: 13),
+              )
+            else ...[
+              ...debtors.take(20).map(
+                    (e) => Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Flexible(
+                            child: Text(
+                              e.key,
+                              style: const TextStyle(fontSize: 13),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          Text(
+                            rupiahD(e.value),
+                            style: const TextStyle(
+                              fontFamily: 'monospace',
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: AppTheme.debt,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+              if (debtors.length > 20)
+                Center(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Text(
+                      '… dan ${debtors.length - 20} pelanggan lainnya',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: AppTheme.inkSoft,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
           ],
         ),
       ),
