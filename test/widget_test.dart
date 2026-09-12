@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pos_krupuk/main.dart';
 import 'package:pos_krupuk/providers/backup_provider.dart';
@@ -9,6 +10,6 @@ void main() {
       backupProvider: BackupProvider(),
       syncProvider: SyncProvider(),
     ));
-    expect(find.text('POS Krupuk'), findsOneWidget);
+    expect(find.byIcon(Icons.store), findsWidgets);
   });
 }

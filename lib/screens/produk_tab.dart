@@ -42,6 +42,7 @@ class _ProdukTabState extends State<ProdukTab> {
     final isMobile = AppTheme.isMobile(context);
 
     return SingleChildScrollView(
+      physics: const AlwaysScrollableScrollPhysics(),
       padding: EdgeInsets.all(isMobile ? 12 : 20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,

@@ -42,6 +42,7 @@ class _RingkasanTabState extends State<RingkasanTab> {
     final isTablet = AppTheme.isTablet(context);
 
     return SingleChildScrollView(
+      physics: const AlwaysScrollableScrollPhysics(),
       padding: EdgeInsets.all(isMobile ? 12 : 20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

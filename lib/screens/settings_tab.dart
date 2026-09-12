@@ -93,6 +93,7 @@ class _SettingsTabState extends State<SettingsTab> {
     _syncFromProvider(prov);
 
     return SingleChildScrollView(
+      physics: const AlwaysScrollableScrollPhysics(),
       padding: EdgeInsets.all(isMobile ? 12 : 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -703,7 +704,10 @@ class _SettingsTabState extends State<SettingsTab> {
 
   Future<void> _testSyncConnection(BuildContext context) async {
     final prov = context.read<SyncProvider>();
-    final ok = await prov.testConnection();
+    final ok = await prov.testConnection(
+      url: _syncUrlCtrl.text,
+      anonKey: _syncKeyCtrl.text,
+    );
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(

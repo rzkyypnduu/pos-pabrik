@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../constants/app_theme.dart';
+import '../constants/formatters.dart';
 import '../providers/tab_provider.dart';
 import '../providers/product_provider.dart';
 import '../providers/transaction_provider.dart';
@@ -13,6 +14,7 @@ import '../providers/stock_management_provider.dart';
 import '../providers/stock_remaining_provider.dart';
 import '../providers/personal_ledger_provider.dart';
 import '../providers/saldo_deduction_provider.dart';
+import '../providers/ringkasan_provider.dart';
 import '../providers/printer_provider.dart';
 import '../providers/backup_provider.dart';
 import '../providers/sync_provider.dart';
@@ -137,7 +139,10 @@ class _PosScreenState extends State<PosScreen> {
                           scaleFactor: 0.5,
                           boundaryMargin: EdgeInsets.zero,
                           interactionEndFrictionCoefficient: 0.5,
-                          child: tabs[tabProv.currentTab],
+                          child: RefreshIndicator(
+                            onRefresh: () => _refreshAllData(),
+                            child: tabs[tabProv.currentTab],
+                          ),
                         )
                       : tabs[tabProv.currentTab],
                 ),
@@ -236,6 +241,41 @@ class _PosScreenState extends State<PosScreen> {
 
   void _resetZoom() {
     _zoomController.value = Matrix4.identity();
+    setState(() {});
+  }
+
+  Future<void> _refreshAllData() async {
+    final tabProv = context.read<TabProvider>();
+    final prodProv = context.read<ProductProvider>();
+    final txProv = context.read<TransactionProvider>();
+    final expProv = context.read<ExpenseProvider>();
+    final ledgerProv = context.read<CustomerLedgerProvider>();
+    final oilProv = context.read<OilStockProvider>();
+    final smProv = context.read<StockManagementProvider>();
+    final srProv = context.read<StockRemainingProvider>();
+    final plProv = context.read<PersonalLedgerProvider>();
+    final sdProv = context.read<SaldoDeductionProvider>();
+    final ringkasanProv = context.read<RingkasanProvider>();
+
+    await prodProv.loadProducts();
+    await ledgerProv.loadAll();
+    await txProv.loadDaySales(tabProv.selectedDate);
+    txProv.initQtyMap(prodProv.products);
+    await txProv.loadCustomerNames();
+    await expProv.loadDayExpenses(tabProv.selectedDate);
+    final range = monthRange(tabProv.activeMonth);
+    await expProv.loadMonthExpenses(range[0], range[1]);
+    await oilProv.loadMonthStocks(tabProv.activeMonth);
+    await smProv.loadMonthStocks(tabProv.activeMonth);
+    await srProv.loadMonthStocks(tabProv.activeMonth);
+    await plProv.loadMonth(tabProv.activeMonth);
+    await sdProv.loadMonth(tabProv.activeMonth);
+    await ringkasanProv.calculate(
+      activeMonth: tabProv.activeMonth,
+      selectedDate: tabProv.selectedDate,
+      customerBalances: ledgerProv.balances,
+    );
+    if (!mounted) return;
     setState(() {});
   }
 

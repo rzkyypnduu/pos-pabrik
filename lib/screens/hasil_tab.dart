@@ -252,6 +252,7 @@ class _HasilTabState extends State<HasilTab> {
 
         Expanded(
           child: SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
             padding: EdgeInsets.all(AppTheme.isMobile(context) ? 8 : 12),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,

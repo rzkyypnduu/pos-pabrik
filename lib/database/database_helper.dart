@@ -573,6 +573,19 @@ class DatabaseHelper {
     return maps.map((m) => Sale.fromMap(m)).toList();
   }
 
+  /// Cari transaksi berdasarkan nama pelanggan (LIKE, case-insensitive).
+  Future<List<Sale>> searchSales(String query) async {
+    final db = await database;
+    final maps = await db.query(
+      'sales',
+      where: 'name LIKE ? COLLATE NOCASE',
+      whereArgs: ['%${query.trim()}%'],
+      orderBy: 'date DESC, id DESC',
+      limit: 50,
+    );
+    return maps.map((m) => Sale.fromMap(m)).toList();
+  }
+
   Future<List<String>> getUniqueSaleNames() async {
     final db = await database;
     final result = await db.rawQuery(

@@ -12,6 +12,7 @@ class TransactionProvider extends ChangeNotifier {
   List<Sale> _monthSales = [];
   List<SaleItem> _monthSaleItems = [];
   List<String> _customerNames = [];
+  List<Sale> _searchResults = [];
   String _txName = '';
   String _txNote = '';
   String _txPaid = '';
@@ -24,6 +25,7 @@ class TransactionProvider extends ChangeNotifier {
   List<Sale> get monthSales => _monthSales;
   List<SaleItem> get monthSaleItems => _monthSaleItems;
   List<String> get customerNames => _customerNames;
+  List<Sale> get searchResults => _searchResults;
   Map<int, double> get txQty => _txQty;
   String get txName => _txName;
   String get txNote => _txNote;
@@ -121,6 +123,15 @@ class TransactionProvider extends ChangeNotifier {
 
   Future<void> loadCustomerNames() async {
     _customerNames = await DatabaseHelper.instance.getUniqueSaleNames();
+    notifyListeners();
+  }
+
+  Future<void> searchSales(String query) async {
+    if (query.trim().isEmpty) {
+      _searchResults = [];
+    } else {
+      _searchResults = await DatabaseHelper.instance.searchSales(query);
+    }
     notifyListeners();
   }
 
