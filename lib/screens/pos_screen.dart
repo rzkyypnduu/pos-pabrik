@@ -197,7 +197,12 @@ class _PosScreenState extends State<PosScreen> {
     final hasLogo = prov.logoPath.isNotEmpty && File(prov.logoPath).existsSync();
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: const BoxDecoration(color: AppTheme.sidebarBg),
+      decoration: const BoxDecoration(
+        color: AppTheme.bg,
+        border: Border(
+          bottom: BorderSide(color: AppTheme.line, width: 1),
+        ),
+      ),
       child: SafeArea(
         bottom: false,
         child: Row(
@@ -214,20 +219,7 @@ class _PosScreenState extends State<PosScreen> {
                 ),
               )
             else
-              const Icon(Icons.store, color: AppTheme.sidebarActive, size: 24),
-            const SizedBox(width: 8),
-            Flexible(
-              child: Text(
-                prov.storeName,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
+              const Icon(Icons.store, color: AppTheme.accent, size: 24),
             const Spacer(),
             if (AppTheme.isMobile(context)) ...[
               _buildZoomButton(Icons.zoom_out, _zoomOut),
@@ -249,14 +241,17 @@ class _PosScreenState extends State<PosScreen> {
 
   Widget _buildZoomButton(IconData icon, VoidCallback onPressed) {
     return Material(
-      color: Colors.white.withValues(alpha: 0.15),
-      borderRadius: BorderRadius.circular(8),
+      color: Colors.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: const BorderSide(color: AppTheme.line, width: 1),
+      ),
       child: InkWell(
         onTap: onPressed,
         borderRadius: BorderRadius.circular(8),
         child: Padding(
           padding: const EdgeInsets.all(8),
-          child: Icon(icon, color: Colors.white, size: 20),
+          child: Icon(icon, color: AppTheme.accent, size: 20),
         ),
       ),
     );
