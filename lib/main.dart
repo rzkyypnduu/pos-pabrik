@@ -17,7 +17,6 @@ import 'providers/stock_remaining_provider.dart';
 import 'providers/customer_ledger_provider.dart';
 import 'providers/personal_ledger_provider.dart';
 import 'providers/saldo_deduction_provider.dart';
-import 'providers/customer_daily_balance_provider.dart';
 import 'providers/ringkasan_provider.dart';
 import 'providers/printer_provider.dart';
 import 'providers/backup_provider.dart';
@@ -103,7 +102,6 @@ class PosKrupukApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => CustomerLedgerProvider()),
         ChangeNotifierProvider(create: (_) => PersonalLedgerProvider()),
         ChangeNotifierProvider(create: (_) => SaldoDeductionProvider()),
-        ChangeNotifierProvider(create: (_) => CustomerDailyBalanceProvider()),
         ChangeNotifierProvider(create: (_) => RingkasanProvider()),
         ChangeNotifierProvider(create: (_) => PrinterProvider()),
         ChangeNotifierProvider(create: (_) => backupProvider),

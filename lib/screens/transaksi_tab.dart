@@ -94,6 +94,7 @@ class _TransaksiTabState extends State<TransaksiTab> {
           decoration: InputDecoration(
             hintText: 'Cari transaksi (nama pelanggan)...',
             prefixIcon: const Icon(Icons.search, size: 20),
+            helperText: 'Hanya transaksi pada tanggal ini.',
             isDense: true,
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(10),

@@ -37,7 +37,6 @@ class SyncProvider extends ChangeNotifier {
     'stock_remainings',
     'personal_ledgers',
     'saldo_deductions',
-    'customer_daily_balances',
   ];
 
   final DatabaseHelper _db = DatabaseHelper.instance;
