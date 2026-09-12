@@ -383,6 +383,9 @@ class DatabaseHelper {
     final db = await database;
     final date = row['date'] as String?;
     if (date == null || date.isEmpty) return false;
+    // Slot yang sudah sengaja dihapus di perangkat ini tidak boleh ditarik
+    // kembali dari perangkat lain.
+    if (await isSlotDeleted(table, date, row['name'] as String?)) return true;
     if (table == 'oil_stocks' || table == 'saldo_deductions') {
       final maps = await db.query(
         table,
@@ -913,6 +916,28 @@ class DatabaseHelper {
     await setSyncMeta('mater_${table}_$date', '1');
   }
 
+  Future<void> markSlotDeleted(
+    String table,
+    String date,
+    String? name,
+  ) async {
+    final key = (name == null || name.isEmpty)
+        ? 'del|$table|$date'
+        : 'del|$table|$date|$name';
+    await setSyncMeta(key, '1');
+  }
+
+  Future<bool> isSlotDeleted(
+    String table,
+    String date,
+    String? name,
+  ) async {
+    final key = (name == null || name.isEmpty)
+        ? 'del|$table|$date'
+        : 'del|$table|$date|$name';
+    return await getSyncMeta(key) == '1';
+  }
+
   Future<OilStock?> materializeOilStock(String date) async {
     final existing = await getOilStocksByDate(date);
     if (existing.isNotEmpty) {
@@ -950,6 +975,7 @@ class DatabaseHelper {
     await _enqueueDeleteById('oil_stocks', id);
     final affected = await db.delete('oil_stocks', where: 'id = ?', whereArgs: [id]);
     if (affected > 0 && day != null) {
+      await markSlotDeleted('oil_stocks', day, null);
       final left = await db.query('oil_stocks', where: 'date = ?', whereArgs: [day]);
       if (left.isEmpty) await markDayMaterialized('oil_stocks', day);
     }
@@ -1085,11 +1111,14 @@ class DatabaseHelper {
     final db = await database;
     final dayRow = await db.query(
       'stock_managements',
-      columns: ['date'],
+      columns: ['date', 'name'],
       where: 'id = ?',
       whereArgs: [id],
     );
-    final day = dayRow.isNotEmpty ? dayRow.first['date'] as String? : null;
+    final day =
+        dayRow.isNotEmpty ? dayRow.first['date'] as String? : null;
+    final name =
+        dayRow.isNotEmpty ? dayRow.first['name'] as String? : null;
     await _enqueueDeleteById('stock_managements', id);
     final affected = await db.delete(
       'stock_managements',
@@ -1097,6 +1126,7 @@ class DatabaseHelper {
       whereArgs: [id],
     );
     if (affected > 0 && day != null) {
+      await markSlotDeleted('stock_managements', day, name);
       final left = await db.query(
         'stock_managements',
         where: 'date = ?',
@@ -1206,11 +1236,12 @@ class DatabaseHelper {
     final db = await database;
     final dayRow = await db.query(
       'stock_remainings',
-      columns: ['date'],
+      columns: ['date', 'name'],
       where: 'id = ?',
       whereArgs: [id],
     );
     final day = dayRow.isNotEmpty ? dayRow.first['date'] as String? : null;
+    final name = dayRow.isNotEmpty ? dayRow.first['name'] as String? : null;
     await _enqueueDeleteById('stock_remainings', id);
     final affected = await db.delete(
       'stock_remainings',
@@ -1218,6 +1249,7 @@ class DatabaseHelper {
       whereArgs: [id],
     );
     if (affected > 0 && day != null) {
+      await markSlotDeleted('stock_remainings', day, name);
       final left = await db.query(
         'stock_remainings',
         where: 'date = ?',
@@ -1432,11 +1464,12 @@ class DatabaseHelper {
     final db = await database;
     final dayRow = await db.query(
       'personal_ledgers',
-      columns: ['date'],
+      columns: ['date', 'name'],
       where: 'id = ?',
       whereArgs: [id],
     );
     final day = dayRow.isNotEmpty ? dayRow.first['date'] as String? : null;
+    final name = dayRow.isNotEmpty ? dayRow.first['name'] as String? : null;
     await _enqueueDeleteById('personal_ledgers', id);
     final affected = await db.delete(
       'personal_ledgers',
@@ -1444,6 +1477,7 @@ class DatabaseHelper {
       whereArgs: [id],
     );
     if (affected > 0 && day != null) {
+      await markSlotDeleted('personal_ledgers', day, name);
       final left = await db.query(
         'personal_ledgers',
         where: 'date = ?',
@@ -1589,6 +1623,7 @@ class DatabaseHelper {
       whereArgs: [id],
     );
     if (affected > 0 && day != null) {
+      await markSlotDeleted('saldo_deductions', day, null);
       final left = await db.query(
         'saldo_deductions',
         where: 'date = ?',
