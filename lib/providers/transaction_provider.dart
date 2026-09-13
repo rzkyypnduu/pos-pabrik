@@ -298,7 +298,7 @@ class TransactionProvider extends ChangeNotifier {
     _isPaymentFlow = true;
     _txName = sale.name;
     _txNote = sale.note ?? '';
-    _txPaid = '0';
+    _txPaid = '';
     _txPaidTouched = true;
 
     for (final p in products) {
@@ -312,7 +312,7 @@ class TransactionProvider extends ChangeNotifier {
       }
     }
     if (saleItems.isEmpty) {
-      _txPaid = sale.paid.toString();
+      _txPaid = sale.paid > 0 ? sale.paid.toString() : '';
     }
     notifyListeners();
   }

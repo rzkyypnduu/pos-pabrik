@@ -233,12 +233,17 @@ class _TransaksiFormScreenState extends State<TransaksiFormScreen> {
         children: [
           if (!isMobile)
             const WindowControls(
-              backgroundColor: AppTheme.ink,
-              brightness: Brightness.dark,
+              backgroundColor: AppTheme.bg,
+              brightness: Brightness.light,
             ),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            decoration: const BoxDecoration(color: AppTheme.ink),
+            decoration: const BoxDecoration(
+              color: AppTheme.surface,
+              border: Border(
+                bottom: BorderSide(color: AppTheme.line, width: 1),
+              ),
+            ),
             child: SafeArea(
               bottom: false,
               top: isMobile,
@@ -251,7 +256,7 @@ class _TransaksiFormScreenState extends State<TransaksiFormScreen> {
                     },
                     icon: const Icon(
                       Icons.close,
-                      color: Colors.white,
+                      color: AppTheme.ink,
                       size: 22,
                     ),
                   ),
@@ -260,7 +265,7 @@ class _TransaksiFormScreenState extends State<TransaksiFormScreen> {
                     child: Text(
                       isEditing ? 'Bayar: ${txProv.txName}' : 'Transaksi Baru',
                       style: const TextStyle(
-                        color: Colors.white,
+                        color: AppTheme.ink,
                         fontSize: 16,
                         fontWeight: FontWeight.w700,
                       ),

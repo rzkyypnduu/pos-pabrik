@@ -1276,7 +1276,8 @@ class _PayDialogState extends State<_PayDialog> {
   @override
   void initState() {
     super.initState();
-    _controller = TextEditingController(text: widget.sale.paid.toString());
+    _controller = TextEditingController(
+      text: widget.sale.paid > 0 ? widget.sale.paid.toString() : '');
     _enteredAmount = widget.sale.paid;
     _controllerPrev = TextEditingController();
     _controllerSecond = TextEditingController();

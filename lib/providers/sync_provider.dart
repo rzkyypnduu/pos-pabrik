@@ -23,6 +23,7 @@ class SyncProvider extends ChangeNotifier {
   static const _keyAnon = 'supabase_anon_key';
   static const _keyDeviceId = 'sync_device_id';
   static const _keySnapshotDone = 'sync_snapshot_done';
+  static const _keyResnapshotDone = 'sync_resnapshot_done';
 
   /// Urutan penting: tabel induk (products, sales, expenses) harus diproses
   /// lebih dulu agar FK sale_id/product_id pada child terselesaikan.
@@ -46,6 +47,7 @@ class SyncProvider extends ChangeNotifier {
   List<RealtimeChannel> _channels = [];
   Timer? _pushTimer;
   Timer? _pullTimer;
+  Timer? _reconcileTimer;
   String? _deviceId;
 
   bool _enabled = false;
@@ -131,19 +133,27 @@ class SyncProvider extends ChangeNotifier {
     _pushTimer = Timer.periodic(const Duration(seconds: 4), (_) => push());
     _pullTimer?.cancel();
     _pullTimer = Timer.periodic(const Duration(seconds: 8), (_) => pullAll());
+    _reconcileTimer?.cancel();
+    _reconcileTimer = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => reconcileAll(),
+    );
     _subscribeRealtime();
     () async {
       await _snapshotIfNeeded();
       await push();
-      await pullAll();
+      await reconcileAll();
     }();
   }
 
   Future<void> _snapshotIfNeeded() async {
-    if ((await _db.getSyncMeta(_keySnapshotDone)) == '1') return;
+    final snapOk = (await _db.getSyncMeta(_keySnapshotDone)) == '1';
+    final resnapOk = (await _db.getSyncMeta(_keyResnapshotDone)) == '1';
+    if (snapOk && resnapOk) return;
     debugPrint('SYNC snapshot: running');
     await _db.enqueueAllForSnapshot();
     await _db.setSyncMeta(_keySnapshotDone, '1');
+    await _db.setSyncMeta(_keyResnapshotDone, '1');
     debugPrint('SYNC snapshot: done');
     await _refreshPendingCount();
   }
@@ -153,12 +163,17 @@ class SyncProvider extends ChangeNotifier {
     _pushTimer = null;
     _pullTimer?.cancel();
     _pullTimer = null;
+    _reconcileTimer?.cancel();
+    _reconcileTimer = null;
     for (final ch in _channels) {
       _client?.removeChannel(ch);
     }
     _channels = [];
     _client = null;
   }
+
+  final Set<String> _pullQueue = {};
+  bool _pullInFlight = false;
 
   void _subscribeRealtime() {
     final client = _client;
@@ -170,11 +185,28 @@ class SyncProvider extends ChangeNotifier {
         schema: 'public',
         table: table,
         callback: (payload) {
-          pullTable(table);
+          _requestPull(table);
         },
       );
       _channels.add(channel);
       channel.subscribe();
+    }
+  }
+
+  /// Antre pull per-tabel agar event Realtime tidak dibuang begitu saja saat
+  /// `_busy`; beberapa event untuk tabel yang sama diangkut menjadi satu.
+  Future<void> _requestPull(String table) async {
+    _pullQueue.add(table);
+    if (_busy || _pullInFlight) return;
+    _pullInFlight = true;
+    try {
+      while (_pullQueue.isNotEmpty) {
+        final t = _pullQueue.first;
+        _pullQueue.remove(t);
+        await pullTable(t);
+      }
+    } finally {
+      _pullInFlight = false;
     }
   }
 
@@ -235,15 +267,17 @@ class SyncProvider extends ChangeNotifier {
               dropped.add(r['_eid'] as int);
               continue;
             }
-            if (table == 'customer_ledgers' && r['sale_id'] == null) {
-              dropped.add(r['_eid'] as int);
-              continue;
-            }
+            // Catatan: customer_ledgers SAH tanpa sale_id (hutang manual),
+            // jadi TIDAK dibuang di sini — selalu di-upload.
             deduped[r['id'].toString()] = r;
           }
           for (final e in dropped) {
             await _db.deleteOutboxEntry(e);
           }
+          // Stempel revisi yang DIJAMIN melebihi semua revisi di cloud, supaya
+          // kursor device lain (`.gt('updated_at', cursor)`) pasti menariknya
+          // apa pun selisih jam antar HP.
+          final stamp = await _monotonicStamp(table);
           final list = deduped.values.toList();
           for (var i = 0; i < list.length; i += 500) {
             final batch = list.sublist(
@@ -253,6 +287,10 @@ class SyncProvider extends ChangeNotifier {
             final body = batch.map((r) {
               final m = Map<String, dynamic>.from(r);
               m.remove('_eid');
+              // Wajib: setiap push memajukan updated_at supaya baris yang
+              // diedit/dihapus ter-tarik oleh `.gt('updated_at', cursor)` di
+              // device lain (server tidak otomatis me-refresh nya).
+              m['updated_at'] = stamp;
               m['updated_by'] = _deviceId;
               return m;
             }).toList();
@@ -279,6 +317,9 @@ class SyncProvider extends ChangeNotifier {
                   .from(table)
                   .update({
                     'deleted_at': DateTime.now().toUtc().toIso8601String(),
+                    // Tombstone juga perlu updated_at lebih baru agar
+                    // ter-tarik oleh `>` cursor di device lain.
+                    'updated_at': stamp,
                   })
                   .inFilter('id', ids)
                   .timeout(_netTimeout);
@@ -292,6 +333,10 @@ class SyncProvider extends ChangeNotifier {
           }
         }
       }
+      // Selesaikan baris yang sempat menunggu induknya (sale_items/
+      // customer_ledgers) yang mungkin sudah ter-pull oleh device ini tadi.
+      final appliedPending = await _db.processPendingRemote();
+      if (appliedPending > 0) _revision += appliedPending;
       await _refreshPendingCount();
       _lastSyncedAt = DateTime.now();
     } catch (e, st) {
@@ -308,6 +353,9 @@ class SyncProvider extends ChangeNotifier {
     for (final table in businessTables) {
       await pullTable(table);
     }
+    // Selesaikan baris yang tadi menunggu induknya (sale_items/customer_ledgers).
+    final appliedPending = await _db.processPendingRemote();
+    if (appliedPending > 0) _revision += appliedPending;
     _lastSyncedAt = DateTime.now();
     await _refreshPendingCount();
     notifyListeners();
@@ -334,32 +382,48 @@ class SyncProvider extends ChangeNotifier {
           keepGoing = false;
           continue;
         }
-        var applied = false;
-        DateTime? maxUpdated;
+        var processed = false;
+        DateTime? maxApplied;
+        DateTime? minSkipped;
         for (final row in rows) {
+          DateTime? parsed;
           final updated = row['updated_at'] as String?;
-          if (updated != null) {
-            final parsed = DateTime.tryParse(updated);
-            if (parsed != null &&
-                (maxUpdated == null || parsed.isAfter(maxUpdated))) {
-              maxUpdated = parsed;
-            }
-          }
+          if (updated != null) parsed = DateTime.tryParse(updated);
           final uuid = row['id'] as String?;
           if (uuid == null) continue;
+          var ok = true;
           final deleted = row['deleted_at'] as String?;
           if (deleted != null && deleted.isNotEmpty) {
             await _db.applyRemoteDelete(table, uuid, row);
           } else {
-            await _db.applyRemoteRow(table, row);
+            ok = await _db.applyRemoteRow(table, row);
           }
-          applied = true;
+          processed = true;
+          if (parsed != null) {
+            if (ok) {
+              if (maxApplied == null || parsed.isAfter(maxApplied)) {
+                maxApplied = parsed;
+              }
+            } else {
+              if (minSkipped == null || parsed.isBefore(minSkipped)) {
+                minSkipped = parsed;
+              }
+            }
+          }
         }
-        if (maxUpdated != null) {
-          cursor = maxUpdated.toUtc().toIso8601String();
+        // Kursor hanya maju sampai sebelum baris yang masih di-skip,
+        // supaya baris itu tidak pernah "tertelan" kursor.
+        DateTime? advanceTo = maxApplied;
+        if (minSkipped != null &&
+            (advanceTo == null || minSkipped.isBefore(advanceTo))) {
+          advanceTo =
+              minSkipped.subtract(const Duration(milliseconds: 1));
+        }
+        if (advanceTo != null) {
+          cursor = advanceTo.toUtc().toIso8601String();
           await _db.setSyncMeta(cursorKey, cursor);
         }
-        if (applied) _revision++;
+        if (processed) _revision++;
         keepGoing = rows.length == 500;
       }
       notifyListeners();
@@ -371,9 +435,139 @@ class SyncProvider extends ChangeNotifier {
     }
   }
 
+  /// Perbaikan data: set ulang kursor ke epoch lalu tarik ulang semua tabel.
+  /// Idempoten (LWW + tombstone melindungi baris lokal yang lebih baru).
+  Future<void> repullAll() async {
+    if (_client == null) return;
+    debugPrint('SYNC repull all: reset cursors + reconcile');
+    await _db.resetAllPullCursors();
+    await push();
+    await reconcileAll();
+  }
+
+  bool _reconcileInFlight = false;
+
+  /// Penyelaras penuh dengan server (model database terpusat):
+  /// menarik SELURUH baris semua tabel (tanpa kursor/timestamp) lalu
+  /// menyamakan diri. Dipanggil tiap 30 detik, saat app dibuka, saat
+  /// "Sinkron Sekarang", dan "Perbaiki Data". Dijamin semua HP akhirnya
+  /// melihat data yang sama karena server adalah sumber kebenaran.
+  Future<void> reconcileAll() async {
+    if (_busy || _client == null || _reconcileInFlight) return;
+    _reconcileInFlight = true;
+    try {
+      // Jangan menarik kembali baris yang masih punya antrean HAPUS lokal
+      // (belum ter-upload) supaya tidak "hidup lagi" sesaat di HP ini.
+      final pending = await _db.getPendingOutbox();
+      final pendingDeletes = <String, Set<String>>{};
+      for (final e in pending) {
+        final table = e['table_name'] as String;
+        final op = e['operation'] as String;
+        if (op != 'delete') continue;
+        final raw = e['payload'] as String? ?? '{}';
+        try {
+          final d = jsonDecode(raw);
+          if (d is Map<String, dynamic> && d['id'] is String) {
+            pendingDeletes
+                .putIfAbsent(table, () => {})
+                .add(d['id'] as String);
+          }
+        } catch (_) {}
+      }
+      for (final table in businessTables) {
+        await pullFullTable(table, pendingDeletes[table]);
+      }
+      final appliedPending = await _db.processPendingRemote();
+      if (appliedPending > 0) _revision += appliedPending;
+      _lastSyncedAt = DateTime.now();
+      await _refreshPendingCount();
+      notifyListeners();
+    } catch (e, st) {
+      debugPrint('SYNC reconcile: $e\n$st');
+      _lastError = '$e';
+    } finally {
+      _reconcileInFlight = false;
+    }
+  }
+
+  /// Tarik SELURUH isi satu tabel dari server (paginasi via id uuid, bukan
+  /// updated_at) lalu terapkan ke lokal.
+  Future<void> pullFullTable(
+    String table, [
+    Set<String>? skipDeletes,
+  ]) async {
+    if (_busy || _client == null) return;
+    _busy = true;
+    try {
+      final client = _client!;
+      String? lastId;
+      while (true) {
+        final base = client.from(table).select('*');
+        final query = lastId == null
+            ? base.order('id').limit(500)
+            : base.gt('id', lastId).order('id').limit(500);
+        final res = await query.timeout(_netTimeout);
+        final rows = (res as List?) ?? [];
+        if (rows.isEmpty) break;
+        lastId = rows.last['id'] as String?;
+        var processed = false;
+        for (final row in rows) {
+          final uuid = row['id'] as String?;
+          if (uuid == null) continue;
+          final deleted = row['deleted_at'] as String?;
+          if (deleted != null && deleted.isNotEmpty) {
+            await _db.applyRemoteDelete(table, uuid, row);
+          } else {
+            if (skipDeletes?.contains(uuid) ?? false) {
+              processed = true;
+              continue;
+            }
+            await _db.applyRemoteRow(table, row);
+          }
+          processed = true;
+        }
+        if (processed) _revision++;
+        if (rows.length < 500) break;
+      }
+      notifyListeners();
+    } catch (e, st) {
+      debugPrint('SYNC pullFull $table: $e\n$st');
+      _lastError = '$e';
+    } finally {
+      _busy = false;
+    }
+  }
+
   Future<void> _refreshPendingCount() async {
     final pending = await _db.getPendingOutbox();
     _pendingCount = pending.length;
+  }
+
+  /// Stempel revisi yang DIJAMIN lebih baru dari semua revisi yang sudah ada
+  /// di cloud. Ini menggantikan `DateTime.now()` HP: jika jam device tertinggal
+  /// dari device lain, stamp tetap dipaksa maju (cloudMax + 1ms) sehingga
+  /// kursor device lain pasti terlewati dan perubahan ikut tertarik.
+  Future<String> _monotonicStamp(String table) async {
+    var t = DateTime.now().toUtc();
+    try {
+      final res = await _client!
+          .from(table)
+          .select('updated_at')
+          .order('updated_at', ascending: false)
+          .limit(1)
+          .timeout(_netTimeout);
+      final rows = (res as List?) ?? [];
+      if (rows.isNotEmpty) {
+        final ts =
+            DateTime.tryParse(rows.first['updated_at'] as String? ?? '');
+        if (ts != null && ts.isAfter(t)) {
+          t = ts.add(const Duration(milliseconds: 1));
+        }
+      }
+    } catch (e) {
+      debugPrint('SYNC stamp $table: $e');
+    }
+    return t.toIso8601String();
   }
 
   @override

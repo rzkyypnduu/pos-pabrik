@@ -25,6 +25,7 @@ dependencies:
   window_manager: ^0.5.2
   file_picker: ^8.1.2
   supabase_flutter: ^2.17.2
+  share_plus: ^12.0.2
 
 dev_dependencies:
   flutter_test:

@@ -35,11 +35,9 @@ class RingkasanProvider extends ChangeNotifier {
     final now = DateTime.now();
     final currentMonth =
         '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}';
-    final analyticsStart = _activeMonth == currentMonth
-        ? todayString()
-        : range[0];
+    final startDate = _activeMonth == currentMonth ? todayString() : range[0];
     topCustomers = await DatabaseHelper.instance.getTopCustomersByMonth(
-      analyticsStart,
+      startDate,
       range[1],
       sortBy: mode,
     );
@@ -54,27 +52,25 @@ class RingkasanProvider extends ChangeNotifier {
     _activeMonth = activeMonth;
     final range = monthRange(activeMonth);
 
-    // SEMENTARA (khusus bulan berjalan): data analitik mulai dihitung dari
-    // hari ini saja karena catatan awal bulan kemarin hilang. Bulan berikutnya
-    // otomatis kembali normal (mulai tanggal 1).
+    // SEMENTARA (khusus bulan berjalan): seluruh Ringkasan (angka hasil +
+    // analitik) mulai dihitung dari hari ini saja karena catatan awal bulan
+    // kemarin hilang. Bulan berikutnya otomatis kembali normal (mulai tgl 1).
     final now = DateTime.now();
     final currentMonth =
         '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}';
-    final analyticsStart = activeMonth == currentMonth
-        ? todayString()
-        : range[0];
+    final startDate = activeMonth == currentMonth ? todayString() : range[0];
 
     final oils = await DatabaseHelper.instance
-        .getOilStocksByMonth(range[0], range[1]);
+        .getOilStocksByMonth(startDate, range[1]);
     totalOil = oils.fold<int>(0, (sum, o) => sum + o.subtotal);
     totalOilKg = oils.fold<double>(0, (sum, o) => sum + o.qty);
 
     final stockMgmts = await DatabaseHelper.instance
-        .getStockManagementsByMonth(range[0], range[1]);
+        .getStockManagementsByMonth(startDate, range[1]);
     totalStockMgmt = stockMgmts.fold<int>(0, (sum, s) => sum + s.subtotal);
 
     final stockRemains = await DatabaseHelper.instance
-        .getStockRemainingsByMonth(range[0], range[1]);
+        .getStockRemainingsByMonth(startDate, range[1]);
     totalRemain = stockRemains.fold<int>(0, (sum, s) => sum + s.subtotal);
 
     totalHutangPel = customerBalances.entries.fold<int>(
@@ -83,27 +79,27 @@ class RingkasanProvider extends ChangeNotifier {
     );
 
     final personalLedgers = await DatabaseHelper.instance
-        .getPersonalLedgersByMonth(range[0], range[1]);
+        .getPersonalLedgersByMonth(startDate, range[1]);
     totalHutangPri = personalLedgers.fold<int>(0, (sum, l) => sum + l.amount);
 
     final saldoLogs = await DatabaseHelper.instance
-        .getSaldoDeductionsByMonth(range[0], range[1]);
+        .getSaldoDeductionsByMonth(startDate, range[1]);
     totalSaldo = saldoLogs.fold<double>(0, (sum, s) => sum + s.result);
 
     grand = totalOil + totalStockMgmt + totalRemain + totalHutangPel;
 
     // Analytics
     topProducts = await DatabaseHelper.instance.getTopProductsByMonth(
-      analyticsStart,
+      startDate,
       range[1],
     );
     topCustomers = await DatabaseHelper.instance.getTopCustomersByMonth(
-      analyticsStart,
+      startDate,
       range[1],
       sortBy: _topCustomersSortMode,
     );
     dailySales = await DatabaseHelper.instance.getDailySalesByMonth(
-      analyticsStart,
+      startDate,
       range[1],
     );
     totalMonthlySales = dailySales.fold<int>(

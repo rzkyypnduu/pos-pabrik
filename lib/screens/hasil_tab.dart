@@ -379,7 +379,7 @@ class _HutangPelangganSectionState extends State<_HutangPelangganSection> {
           setState(() {
             _editingId = id;
             _editingControllers[id] = TextEditingController(
-              text: rupiahInputText(remaining),
+              text: remaining > 0 ? rupiahInputText(remaining) : '',
             );
           });
         },
@@ -1678,7 +1678,7 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
                           setState(() {
                             _editingBatchKey = editKey;
                             _editControllers[editKey] = TextEditingController(
-                              text: fmtKg(batchQty),
+                              text: batchQty > 0 ? fmtKg(batchQty) : '',
                             );
                           });
                         },
@@ -1720,7 +1720,9 @@ class _ManajemenStokSectionState extends State<_ManajemenStokSection> {
                             _editingPriceKey = editKey;
                             _editPriceControllers[editKey] =
                                 TextEditingController(
-                                  text: batchPrice.toString(),
+                                  text: batchPrice > 0
+                                      ? batchPrice.toString()
+                                      : '',
                                 );
                           });
                         },
@@ -2331,7 +2333,9 @@ class _SisaBarangSectionState extends State<_SisaBarangSection> {
                   ? TextField(
                       controller: _editQtyControllers.putIfAbsent(
                         sr.id!,
-                        () => TextEditingController(text: fmtKg(sr.qty)),
+                        () => TextEditingController(
+                          text: sr.qty > 0 ? fmtKg(sr.qty) : '',
+                        ),
                       ),
                       autofocus: true,
                       keyboardType: TextInputType.number,
@@ -2346,7 +2350,9 @@ class _SisaBarangSectionState extends State<_SisaBarangSection> {
                       onTap: () => setState(() {
                         _editingId = sr.id;
                         _editQtyControllers[sr.id!] =
-                            TextEditingController(text: fmtKg(sr.qty));
+                            TextEditingController(
+                              text: sr.qty > 0 ? fmtKg(sr.qty) : '',
+                            );
                       }),
                       child: Text(
                         fmtKg(sr.qty),
@@ -2365,7 +2371,7 @@ class _SisaBarangSectionState extends State<_SisaBarangSection> {
                       controller: _editPriceControllers.putIfAbsent(
                         sr.id!,
                         () => TextEditingController(
-                          text: sr.price.toString(),
+                          text: sr.price > 0 ? sr.price.toString() : '',
                         ),
                       ),
                       autofocus: true,
@@ -2388,7 +2394,7 @@ class _SisaBarangSectionState extends State<_SisaBarangSection> {
                         _editingPriceId = sr.id;
                         _editPriceControllers[sr.id!] =
                             TextEditingController(
-                              text: sr.price.toString(),
+                              text: sr.price > 0 ? sr.price.toString() : '',
                             );
                       }),
                       child: Text(
@@ -2685,7 +2691,9 @@ class _HutangPribadiSectionState extends State<_HutangPribadiSection> {
     setState(() {
       _editingId = pl.id;
       _editingField = field;
-      _editingControllers[field] = TextEditingController(text: initialValue);
+      final text =
+          (field == 'amount' && initialValue == '0') ? '' : initialValue;
+      _editingControllers[field] = TextEditingController(text: text);
     });
   }
 

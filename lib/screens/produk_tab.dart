@@ -178,7 +178,9 @@ class _ProdukTabState extends State<ProdukTab> {
                           if (!_editPriceControllers.containsKey(product.id)) {
                             _editPriceControllers[product.id!] =
                                 TextEditingController(
-                                    text: product.price.toString());
+                                    text: product.price > 0
+                                        ? product.price.toString()
+                                        : '');
                           }
 
                           return DataRow(cells: [

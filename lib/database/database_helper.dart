@@ -111,7 +111,7 @@ class DatabaseHelper {
     }
     return await openDatabase(
       path,
-      version: 5,
+      version: 6,
       onCreate: _createDB,
       onUpgrade: _upgradeDB,
     );
@@ -178,6 +178,9 @@ class DatabaseHelper {
         );
         final saleUuid = rows.isEmpty ? null : rows.first['uuid'] as String?;
         p['sale_id'] = saleUuid;
+      } else {
+        // Hutang manual tanpa sale -> kirim null eksplisit (kolom nullable).
+        p['sale_id'] = null;
       }
     }
     return p;
@@ -399,16 +402,110 @@ class DatabaseHelper {
     return _parseTs(rows.first['updated_at'] as String?).isAfter(remoteTs);
   }
 
+  /// Urutan pull: induk dulu agar FK child terselesaikan.
+  static const _pendingTableOrder = [
+    'products',
+    'sales',
+    'expenses',
+    'sale_items',
+    'customer_ledgers',
+    'oil_stocks',
+    'stock_managements',
+    'stock_remainings',
+    'personal_ledgers',
+    'saldo_deductions',
+  ];
+
+  Future<void> _savePendingRemote(
+    String table,
+    String uuid,
+    Map<String, dynamic> payload,
+  ) async {
+    final db = await database;
+    await db.insert(
+      'sync_pending',
+      {
+        'table_name': table,
+        'uuid': uuid,
+        'payload': jsonEncode(payload),
+        'created_at': _now(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<void> deletePendingRemote(String table, String uuid) async {
+    final db = await database;
+    await db.delete(
+      'sync_pending',
+      where: 'table_name = ? AND uuid = ?',
+      whereArgs: [table, uuid],
+    );
+  }
+
+  /// Coba terapkan ulang baris yang tadinya menunggu induknya tiba lokal.
+  /// Dipanggil tiap akhir siklus pull & saat push.
+  Future<int> processPendingRemote() async {
+    final db = await database;
+    final rows = await db.query('sync_pending', orderBy: 'id ASC');
+    if (rows.isEmpty) return 0;
+    final order = <String, int>{
+      for (var i = 0; i < _pendingTableOrder.length; i++)
+        _pendingTableOrder[i]: i,
+    };
+    rows.sort(
+      (a, b) => (order[a['table_name']] ?? 999)
+          .compareTo(order[b['table_name']] ?? 999),
+    );
+    var applied = 0;
+    for (final entry in rows) {
+      final table = entry['table_name'] as String;
+      final uuid = entry['uuid'] as String;
+      final raw = entry['payload'] as String? ?? '{}';
+      Map<String, dynamic>? payload;
+      try {
+        final d = jsonDecode(raw);
+        if (d is Map<String, dynamic>) payload = d;
+      } catch (_) {
+        payload = null;
+      }
+      if (payload == null) {
+        await deletePendingRemote(table, uuid);
+        continue;
+      }
+      final ok = await applyRemoteRow(table, payload);
+      if (ok) {
+        await deletePendingRemote(table, uuid);
+        applied++;
+      }
+    }
+    return applied;
+  }
+
+  Future<void> resetAllPullCursors() async {
+    final db = await database;
+    for (final table in _pendingTableOrder) {
+      await db.insert(
+        'sync_meta',
+        {'key': 'pull_cursor_$table', 'value': '1970-01-01T00:00:00Z'},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
+  }
+
   /// Terapkan baris remote ke tabel lokal. `payload` memakai kolom remote:
   /// `id` = uuid, kolom FK (sale_id/product_id) berisi uuid. TIDAK menulis outbox.
-  Future<void> applyRemoteRow(
+  /// Return `true` bila baris berhasil diproses (kursor aman maju), `false` bila
+  /// masih menunggu induk (disimpan ke sync_pending utk dicoba ulang).
+  Future<bool> applyRemoteRow(
     String table,
     Map<String, dynamic> payload,
   ) async {
     final db = await database;
     final uuid = payload['id'] as String?;
-    if (uuid == null) return;
+    if (uuid == null) return true;
 
+    final origPayload = Map<String, dynamic>.from(payload);
     final row = Map<String, dynamic>.from(payload);
     row.remove('id');
     row['uuid'] = uuid;
@@ -420,8 +517,9 @@ class DatabaseHelper {
       if (saleUuid != null && saleUuid.isNotEmpty) {
         final saleId = await _localSaleIdByUuid(saleUuid);
         if (saleId == null) {
-          // Induk belum ada lokal -> tunggu diproses lagi nanti (parent dulu).
-          return;
+          // Induk belum ada lokal -> antre, jangan buang baris.
+          await _savePendingRemote(table, uuid, origPayload);
+          return false;
         }
         row['sale_id'] = saleId;
       }
@@ -434,7 +532,10 @@ class DatabaseHelper {
       final saleUuid = row.remove('sale_id') as String?;
       if (saleUuid != null && saleUuid.isNotEmpty) {
         final saleId = await _localSaleIdByUuid(saleUuid);
-        if (saleId == null) return;
+        if (saleId == null) {
+          await _savePendingRemote(table, uuid, origPayload);
+          return false;
+        }
         row['sale_id'] = saleId;
       }
     }
@@ -449,38 +550,43 @@ class DatabaseHelper {
     final existingId = await _localIdByUuid(table, uuid);
     if (existingId != null) {
       // Last-writer-wins: jangan turunkan baris yang diedit lebih baru lokal.
-      if (await _localRowNewerThan(table, existingId, remoteTs)) return;
+      if (await _localRowNewerThan(table, existingId, remoteTs)) return true;
       row.remove('created_at');
       row['id'] = existingId;
       await db.update(table, row, where: 'id = ?', whereArgs: [existingId]);
-      return;
+      await deletePendingRemote(table, uuid);
+      return true;
     }
 
     if (_isSlotTable(table)) {
       final date = row['date'] as String?;
-      if (date == null || date.isEmpty) return;
+      if (date == null || date.isEmpty) return true;
       final name = row['name'] as String?;
       final localIds = await _slotLocalIds(table, date, name);
       if (localIds.isEmpty) {
         // Slot kosong: jangan tarik kembali jika slot sengaja dihapus dgn ts
         // yang lebih baru daripada baris remote ini.
         if ((await slotDeletedSince(table, date, name)).isAfter(remoteTs)) {
-          return;
+          return true;
         }
         await db.insert(table, row);
-        return;
+        await deletePendingRemote(table, uuid);
+        return true;
       }
       // Slot terisi baris lain (uji uuid lain): ambil yang terbaru.
       final maxLocal = await _maxSlotUpdatedAt(table, date, name);
-      if (maxLocal.isAfter(remoteTs)) return;
+      if (maxLocal.isAfter(remoteTs)) return true;
       for (final id in localIds) {
         await db.delete(table, where: 'id = ?', whereArgs: [id]);
       }
       await db.insert(table, row);
-      return;
+      await deletePendingRemote(table, uuid);
+      return true;
     }
 
     await db.insert(table, row);
+    await deletePendingRemote(table, uuid);
+    return true;
   }
 
   Future<void> applyRemoteDelete(
@@ -489,6 +595,7 @@ class DatabaseHelper {
     Map<String, dynamic>? row,
   ]) async {
     final db = await database;
+    await deletePendingRemote(table, uuid);
     if (_isSlotTable(table)) {
       final date = row?['date'] as String?;
       if (date == null || date.isEmpty) {
@@ -521,6 +628,13 @@ class DatabaseHelper {
       );
       if (left.isEmpty) await markDayMaterialized(table, date, at: tomb);
       return;
+    }
+    // Non-slot: LWW guard — jangan hapus baris lokal yang diedit LEBIH BARU
+    // daripada tombstone (device lain sudah lanjut mengedit setelah dihapus).
+    final existingId = await _localIdByUuid(table, uuid);
+    if (existingId != null) {
+      final tomb = _parseTs(row?['updated_at'] as String?);
+      if (await _localRowNewerThan(table, existingId, tomb)) return;
     }
     await db.delete(table, where: 'uuid = ?', whereArgs: [uuid]);
   }
@@ -605,6 +719,9 @@ class DatabaseHelper {
       }
       await _createSyncTables(db);
     }
+    if (oldVersion < 6) {
+      await _createSyncTables(db);
+    }
   }
 
   Future<void> _createSyncTables(Database db) async {
@@ -613,6 +730,9 @@ class DatabaseHelper {
     );
     await db.execute(
       '''CREATE TABLE IF NOT EXISTS sync_meta (key TEXT PRIMARY KEY, value TEXT)''',
+    );
+    await db.execute(
+      '''CREATE TABLE IF NOT EXISTS sync_pending (id INTEGER PRIMARY KEY AUTOINCREMENT, table_name TEXT NOT NULL, uuid TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT, UNIQUE (table_name, uuid))''',
     );
   }
 

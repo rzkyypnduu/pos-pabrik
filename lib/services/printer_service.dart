@@ -383,12 +383,12 @@ class PrinterService {
       final timeStr =
           '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
       b.addAll(_alignLeft());
-      b.addAll(_wrapLeft('Nama${' ' * 12}: $customerName'));
+      b.addAll(_wrapLeft('Nama${' ' * 8}: $customerName'));
       final label = timestamp != null ? 'Tanggal' : 'Tanggal cetak';
       final onlyDate = timestamp != null && now.hour == 0 && now.minute == 0;
       final line = onlyDate
-          ? '${label.padRight(16)}: $dateStr'
-          : '${label.padRight(16)}: $dateStr $timeStr';
+          ? '${label.padRight(12)}: $dateStr'
+          : '${label.padRight(12)}: $dateStr $timeStr';
       b.addAll(_textLine(line));
       b.addAll(_alignCenter());
       b.addAll(_textLine('================================'));

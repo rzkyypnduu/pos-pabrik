@@ -28,7 +28,8 @@ class _DebtDetailDialogState extends State<DebtDetailDialog> {
     super.initState();
     final provider = context.read<CustomerLedgerProvider>();
     final current = provider.balanceFor(widget.customerName);
-    _adjustController = TextEditingController(text: current.toString());
+    _adjustController =
+        TextEditingController(text: current > 0 ? current.toString() : '');
   }
 
   @override

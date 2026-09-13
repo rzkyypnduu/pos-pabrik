@@ -3,7 +3,9 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:flutter_classic_bluetooth/flutter_classic_bluetooth.dart';
 
 import '../constants/app_theme.dart';
@@ -516,7 +518,7 @@ class _SettingsTabState extends State<SettingsTab> {
               SizedBox(
                 width: isMobile ? double.infinity : null,
                 child: OutlinedButton.icon(
-                  onPressed: () => _exportData(context),
+                  onPressed: () => _showExportDialog(context),
                   icon: const Icon(Icons.ios_share, size: 18),
                   label: const Text('Export Data'),
                   style: OutlinedButton.styleFrom(
@@ -631,10 +633,22 @@ class _SettingsTabState extends State<SettingsTab> {
           const SizedBox(height: 8),
           Row(
             children: [
-              OutlinedButton.icon(
-                onPressed: () => _testSyncConnection(context),
-                icon: const Icon(Icons.wifi_tethering, size: 18),
-                label: const Text('Uji Koneksi'),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => _testSyncConnection(context),
+                  icon: const Icon(Icons.wifi_tethering, size: 18),
+                  label: const Text('Uji Koneksi'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: prov.busy || !prov.enabled
+                      ? null
+                      : () => _repullData(context),
+                  icon: const Icon(Icons.refresh, size: 18),
+                  label: const Text('Perbaiki Data'),
+                ),
               ),
             ],
           ),
@@ -691,12 +705,29 @@ class _SettingsTabState extends State<SettingsTab> {
 
   Future<void> _syncNow(BuildContext context) async {
     final prov = context.read<SyncProvider>();
-    await prov.pullAll();
-    await prov.push();
+    await prov.repullAll();
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text('Sinkronisasi selesai'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Future<void> _repullData(BuildContext context) async {
+    final prov = context.read<SyncProvider>();
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Memperbaiki data... menarik ulang dari cloud'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+    await prov.repullAll();
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Perbaikan data selesai'),
         duration: Duration(seconds: 2),
       ),
     );
@@ -946,16 +977,69 @@ class _SettingsTabState extends State<SettingsTab> {
     return await prov.hasAllFilesAccess();
   }
 
-  Future<void> _exportData(BuildContext context) async {
+  Future<void> _showExportDialog(BuildContext context) async {
+    final shareSupported = Platform.isAndroid || Platform.isIOS;
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Text(
+                'Export Data',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.save_alt, color: AppTheme.accent),
+              title: const Text('Simpan file'),
+              onTap: () => Navigator.of(ctx).pop('save'),
+            ),
+            if (shareSupported)
+              ListTile(
+                leading: const Icon(Icons.ios_share, color: AppTheme.accent),
+                title: const Text('Bagikan ke aplikasi lain'),
+                subtitle: const Text('Drive, WhatsApp, Email, dll'),
+                onTap: () => Navigator.of(ctx).pop('share'),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (!context.mounted) return;
+    if (choice == 'save') {
+      await _exportSaveFile(context);
+    } else if (choice == 'share') {
+      await _exportShare(context);
+    }
+  }
+
+  Future<void> _exportSaveFile(BuildContext context) async {
     try {
       final defaultName =
           'pos_krupuk_backup_${DateTime.now().millisecondsSinceEpoch}.db';
-      final result = await FilePicker.platform.saveFile(
-        dialogTitle: 'Simpan Cadangan Database',
-        fileName: defaultName,
-      );
-      if (result == null) return;
-      await DatabaseHelper.instance.exportDatabase(result);
+      if (Platform.isAndroid || Platform.isIOS) {
+        final bytes = await DatabaseHelper.instance.exportDatabaseBytes();
+        final result = await FilePicker.platform.saveFile(
+          dialogTitle: 'Simpan Cadangan Database',
+          fileName: defaultName,
+          bytes: bytes,
+        );
+        if (result == null) return;
+      } else {
+        final result = await FilePicker.platform.saveFile(
+          dialogTitle: 'Simpan Cadangan Database',
+          fileName: defaultName,
+        );
+        if (result == null) return;
+        await DatabaseHelper.instance.exportDatabase(result);
+      }
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -971,6 +1055,54 @@ class _SettingsTabState extends State<SettingsTab> {
           backgroundColor: AppTheme.debt,
         ),
       );
+    }
+  }
+
+  Future<void> _exportShare(BuildContext context) async {
+    File? temp;
+    try {
+      final bytes = await DatabaseHelper.instance.exportDatabaseBytes();
+      final dir = await getTemporaryDirectory();
+      final name =
+          'pos_krupuk_backup_${DateTime.now().millisecondsSinceEpoch}.db';
+      temp = File('${dir.path}/$name');
+      await temp.writeAsBytes(bytes, flush: true);
+      final result = await SharePlus.instance.share(
+        ShareParams(
+          files: [XFile(temp.path, mimeType: 'application/octet-stream')],
+          text: 'Backup data POS Krupuk',
+        ),
+      );
+      if (result.status == ShareResultStatus.unavailable) {
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Berbagi tidak tersedia di perangkat ini'),
+            backgroundColor: AppTheme.debt,
+          ),
+        );
+        return;
+      }
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Data siap untuk dibagikan'),
+          backgroundColor: AppTheme.paid,
+        ),
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Bagikan gagal: $e'),
+          backgroundColor: AppTheme.debt,
+        ),
+      );
+    } finally {
+      try {
+        await Future<void>.delayed(const Duration(seconds: 30));
+        await temp?.delete();
+      } catch (_) {}
     }
   }
 

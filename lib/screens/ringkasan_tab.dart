@@ -180,66 +180,6 @@ class _RingkasanTabState extends State<RingkasanTab> {
             ),
           ),
 
-          // Total Penjualan
-          const SizedBox(height: 16),
-          Card(
-            child: Padding(
-              padding: EdgeInsets.all(isMobile ? 16 : 20),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Penjualan Bulan Ini',
-                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
-                  ),
-                  const SizedBox(height: 12),
-                  if (isMobile)
-                    Column(
-                      children: [
-                        _summaryItem(
-                          'Total Penjualan',
-                          rupiah(ringProv.totalMonthlySales),
-                        ),
-                        const SizedBox(height: 8),
-                        _summaryItem(
-                          'Total Diterima',
-                          rupiah(ringProv.totalMonthlyPaid),
-                        ),
-                        const SizedBox(height: 8),
-                        _summaryItem(
-                          'Total Transaksi',
-                          '${ringProv.totalMonthlyTransactions}x',
-                        ),
-                      ],
-                    )
-                  else
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _summaryItem(
-                            'Total Penjualan',
-                            rupiah(ringProv.totalMonthlySales),
-                          ),
-                        ),
-                        Expanded(
-                          child: _summaryItem(
-                            'Total Diterima',
-                            rupiah(ringProv.totalMonthlyPaid),
-                          ),
-                        ),
-                        Expanded(
-                          child: _summaryItem(
-                            'Total Transaksi',
-                            '${ringProv.totalMonthlyTransactions}x',
-                          ),
-                        ),
-                      ],
-                    ),
-                ],
-              ),
-            ),
-          ),
-
           const SizedBox(height: 16),
           _buildDailyChart(ringProv, isMobile),
 
@@ -291,22 +231,6 @@ class _RingkasanTabState extends State<RingkasanTab> {
           ),
         ],
       ),
-    );
-  }
-
-  Widget _summaryItem(String label, String value) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: const TextStyle(fontSize: 12, color: AppTheme.inkSoft),
-        ),
-        Text(
-          value,
-          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
-        ),
-      ],
     );
   }
 
