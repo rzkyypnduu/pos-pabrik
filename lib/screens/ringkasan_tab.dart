@@ -484,10 +484,7 @@ class _RingkasanTabState extends State<RingkasanTab> {
                   await ringProv.resetMonth(tabProv.activeMonth);
                   _loadData();
                 }),
-                _resetBtn('Reset Stok/Saldo', () async {
-                  await ringProv.clearOilAndSaldo();
-                  _loadData();
-                }),
+                _deleteRangeBtn(ringProv),
                 _resetBtn('Reset Semua', () async {
                   await ringProv.resetAll();
                   _loadData();
@@ -499,6 +496,52 @@ class _RingkasanTabState extends State<RingkasanTab> {
       ),
     );
   }
+
+  Widget _deleteRangeBtn(RingkasanProvider ringProv) {
+    return OutlinedButton(
+      onPressed: () async {
+        final now = DateTime.now();
+        final picked = await showDateRangePicker(
+          context: context,
+          firstDate: DateTime(2000),
+          lastDate: now,
+          initialDateRange: DateTimeRange(
+            start: DateTime(now.year, now.month, 1),
+            end: now,
+          ),
+          helpText: 'Pilih rentang tanggal data Hasil yang dihapus',
+          cancelText: 'Batal',
+          confirmText: 'Lanjut',
+        );
+        if (picked == null || !mounted) return;
+        await ConfirmationDialog.show(
+          context: context,
+          title: 'Hapus Data Hasil',
+          message:
+              'Hapus data Hasil tanggal ${_dbDate(picked.start)} s/d '
+              '${_dbDate(picked.end)} (minyak, stok bahan, sisa barang, '
+              'hutang pribadi, pengurangan saldo)? Tindakan ini permanen.',
+          isDestructive: true,
+          onConfirm: () async {
+            await ringProv
+                .clearSlotDataByDateRange(
+              _dbDate(picked.start),
+              _dbDate(picked.end),
+            );
+            _loadData();
+          },
+        );
+      },
+      style: OutlinedButton.styleFrom(
+        foregroundColor: AppTheme.debt,
+        side: const BorderSide(color: AppTheme.debt),
+      ),
+      child: const Text('Hapus Data Hasil'),
+    );
+  }
+
+  String _dbDate(DateTime d) =>
+      '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
   Widget _resetBtn(String label, VoidCallback onConfirm) {
     return OutlinedButton(

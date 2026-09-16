@@ -56,6 +56,7 @@ class SyncProvider extends ChangeNotifier {
   DateTime? _lastSyncedAt;
   int _pendingCount = 0;
   int _revision = 0;
+  int _reconcileCount = 0;
 
   String? _url;
   String? _anonKey;
@@ -141,6 +142,17 @@ class SyncProvider extends ChangeNotifier {
     _subscribeRealtime();
     () async {
       await _snapshotIfNeeded();
+      await Future<void>.delayed(const Duration(seconds: 2));
+      try {
+        final repaired = await _db.forceRepairAll();
+        if (repaired > 0) {
+          debugPrint('SYNC startup repair: $repaired rows fixed');
+          _revision++;
+          notifyListeners();
+        }
+      } catch (e) {
+        debugPrint('SYNC startup repair skipped: $e');
+      }
       await push();
       await reconcileAll();
     }();
@@ -214,8 +226,10 @@ class SyncProvider extends ChangeNotifier {
 
   Future<void> push() async {
     if (_busy || _client == null) return;
+    if (_db.isClosed) return; // Database sedang backup/import
     _busy = true;
     try {
+      // Guard: jangan push jika database sedang ditutup (backup/import).
       final pending = await _db.getPendingOutbox();
       debugPrint('SYNC push start: ${pending.length} pending');
       if (pending.isNotEmpty) {
@@ -261,18 +275,35 @@ class SyncProvider extends ChangeNotifier {
           if (g == null) continue;
           final upserts = g['upsert']!;
           final deduped = <String, Map<String, dynamic>>{};
-          final dropped = <int>[];
           for (final r in upserts) {
-            if (table == 'sale_items' && r['sale_id'] == null) {
-              dropped.add(r['_eid'] as int);
+            // Resolve-ulang FK yang masih kosong dari UUID yang disimpan saat
+            // enqueue, supaya sale_items yang sempat ter-enqueue sebelum
+            // salenya tersinkron tetap ikut ter-upload (bukan dibuang).
+            final lsid = r['_local_sale_id'];
+            if (lsid is int &&
+                (r['sale_id'] == null || (r['sale_id'] as String? ?? '').isEmpty)) {
+              final saleUuid = await _db.saleUuidByLocalId(lsid);
+              if (saleUuid != null && saleUuid.isNotEmpty) {
+                r['sale_id'] = saleUuid;
+              }
+            }
+            final lpid = r['_local_product_id'];
+            if (lpid is int &&
+                (r['product_id'] == null || (r['product_id'] as String? ?? '').isEmpty)) {
+              final productUuid = await _db.productUuidByLocalId(lpid);
+              if (productUuid != null && productUuid.isNotEmpty) {
+                r['product_id'] = productUuid;
+              }
+            }
+            if (table == 'sale_items' &&
+                (r['sale_id'] == null || (r['sale_id'] as String? ?? '').isEmpty)) {
+              // Induk belum punya uuid lokal: TIDAK dihapus (tetap di outbox),
+              // ditunda ke siklus berikut saat uuid induk sudah muncul.
               continue;
             }
             // Catatan: customer_ledgers SAH tanpa sale_id (hutang manual),
             // jadi TIDAK dibuang di sini — selalu di-upload.
             deduped[r['id'].toString()] = r;
-          }
-          for (final e in dropped) {
-            await _db.deleteOutboxEntry(e);
           }
           // Stempel revisi yang DIJAMIN melebihi semua revisi di cloud, supaya
           // kursor device lain (`.gt('updated_at', cursor)`) pasti menariknya
@@ -284,25 +315,7 @@ class SyncProvider extends ChangeNotifier {
               i,
               math.min(i + 500, list.length),
             );
-            final body = batch.map((r) {
-              final m = Map<String, dynamic>.from(r);
-              m.remove('_eid');
-              // Wajib: setiap push memajukan updated_at supaya baris yang
-              // diedit/dihapus ter-tarik oleh `.gt('updated_at', cursor)` di
-              // device lain (server tidak otomatis me-refresh nya).
-              m['updated_at'] = stamp;
-              m['updated_by'] = _deviceId;
-              return m;
-            }).toList();
-            try {
-              await _client!.from(table).upsert(body).timeout(_netTimeout);
-              for (final r in batch) {
-                await _db.deleteOutboxEntry(r['_eid'] as int);
-              }
-            } catch (e, st) {
-              debugPrint('SYNC upsert $table (${body.length}): $e\n$st');
-              _lastError = '$e';
-            }
+            await _sendUpsertBatchWithIsolation(table, batch, stamp);
           }
           final deletes = g['delete']!;
           for (var i = 0; i < deletes.length; i += 200) {
@@ -310,26 +323,7 @@ class SyncProvider extends ChangeNotifier {
               i,
               math.min(i + 200, deletes.length),
             );
-            final ids =
-                batch.map((r) => r['id'].toString()).toList();
-            try {
-              await _client!
-                  .from(table)
-                  .update({
-                    'deleted_at': DateTime.now().toUtc().toIso8601String(),
-                    // Tombstone juga perlu updated_at lebih baru agar
-                    // ter-tarik oleh `>` cursor di device lain.
-                    'updated_at': stamp,
-                  })
-                  .inFilter('id', ids)
-                  .timeout(_netTimeout);
-              for (final r in batch) {
-                await _db.deleteOutboxEntry(r['_eid'] as int);
-              }
-            } catch (e, st) {
-              debugPrint('SYNC delete $table (${ids.length}): $e\n$st');
-              _lastError = '$e';
-            }
+            await _sendDeleteWithIsolation(table, batch, stamp);
           }
         }
       }
@@ -350,6 +344,7 @@ class SyncProvider extends ChangeNotifier {
 
   Future<void> pullAll() async {
     if (_busy || _client == null) return;
+    if (_db.isClosed) return; // Database sedang backup/import
     for (final table in businessTables) {
       await pullTable(table);
     }
@@ -363,6 +358,7 @@ class SyncProvider extends ChangeNotifier {
 
   Future<void> pullTable(String table) async {
     if (_busy || _client == null) return;
+    if (_db.isClosed) return; // Database sedang backup/import
     _busy = true;
     try {
       final client = _client!;
@@ -440,7 +436,20 @@ class SyncProvider extends ChangeNotifier {
   Future<void> repullAll() async {
     if (_client == null) return;
     debugPrint('SYNC repull all: reset cursors + reconcile');
+    // Tunggu hingga tidak ada push/pull/reconcile yang sedang berjalan,
+    // supaya reset kursor tidak diam-diam batal (`_busy` guard) dan hasilnya
+    // benar-benar masuk dalam siklus ini.
+    for (var i = 0; i < 40; i++) {
+      if (!_busy && !_reconcileInFlight) break;
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
     await _db.resetAllPullCursors();
+    // Rapikan SEMUA data: duplikat slot, sale_items orphaned, customer_ledgers
+    // orphaned. Kirim tombstone-nya supaya cloud & HP lain ikut rapi.
+    try {
+      final repaired = await _db.forceRepairAll();
+      if (repaired > 0) _revision++;
+    } catch (_) {}
     await push();
     await reconcileAll();
   }
@@ -454,6 +463,7 @@ class SyncProvider extends ChangeNotifier {
   /// melihat data yang sama karena server adalah sumber kebenaran.
   Future<void> reconcileAll() async {
     if (_busy || _client == null || _reconcileInFlight) return;
+    if (_db.isClosed) return; // Database sedang backup/import
     _reconcileInFlight = true;
     try {
       // Jangan menarik kembali baris yang masih punya antrean HAPUS lokal
@@ -479,6 +489,15 @@ class SyncProvider extends ChangeNotifier {
       }
       final appliedPending = await _db.processPendingRemote();
       if (appliedPending > 0) _revision += appliedPending;
+      // Perbaiki duplikat/orphaned secara periodik (tiap ~5 menit, bukan
+      // tiap reconcile) supaya data tetap bersih tanpa menambah beban.
+      _reconcileCount++;
+      if (_reconcileCount % 10 == 0) {
+        try {
+          final repaired = await _db.forceRepairAll();
+          if (repaired > 0) _revision++;
+        } catch (_) {}
+      }
       _lastSyncedAt = DateTime.now();
       await _refreshPendingCount();
       notifyListeners();
@@ -568,6 +587,106 @@ class SyncProvider extends ChangeNotifier {
       debugPrint('SYNC stamp $table: $e');
     }
     return t.toIso8601String();
+  }
+
+  /// Kirim batch upsert dengan isolasi per-baris: jika seluruh batch ditolak,
+  /// coba satu-satu agar satu baris "beracun" (mis. FK rusak) tidak memblokir
+  /// baris sehat (penyebab Total kg 0 pada semua HP).
+  Future<void> _sendUpsertBatchWithIsolation(
+    String table,
+    List<Map<String, dynamic>> batch,
+    String stamp,
+  ) async {
+    final client = _client;
+    if (client == null) return;
+    final body = batch.map((r) {
+      final m = Map<String, dynamic>.from(r);
+      m.remove('_eid');
+      // Kolom bantu resolusi FK (bukan kolom remote) tidak boleh ikut terkirim.
+      m.remove('_local_sale_id');
+      m.remove('_local_product_id');
+      // Wajib: setiap push memajukan updated_at supaya baris yang
+      // diedit/dihapus ter-tarik oleh `.gt('updated_at', cursor)` di
+      // device lain (server tidak otomatis me-refresh nya).
+      m['updated_at'] = stamp;
+      m['updated_by'] = _deviceId;
+      return m;
+    }).toList();
+    try {
+      await client.from(table).upsert(body).timeout(_netTimeout);
+      for (final r in batch) {
+        await _db.deleteOutboxEntry(r['_eid'] as int);
+      }
+      return;
+    } catch (e, st) {
+      debugPrint('SYNC upsert $table (${body.length}): $e\n$st');
+      _lastError = '$e';
+    }
+    // Batch besar gagal total → jatuhkan ke per baris supaya satu baris
+    // bermasalah tidak menghentikan sisanya.
+    for (final r in batch) {
+      final m = Map<String, dynamic>.from(r);
+      m.remove('_eid');
+      m.remove('_local_sale_id');
+      m.remove('_local_product_id');
+      m['updated_at'] = stamp;
+      m['updated_by'] = _deviceId;
+      try {
+        await client.from(table).upsert([m]).timeout(_netTimeout);
+        await _db.deleteOutboxEntry(r['_eid'] as int);
+      } catch (e, st) {
+        debugPrint('SYNC upsert single $table #${r['id']}: $e\n$st');
+        _lastError = '$e';
+      }
+    }
+  }
+
+  /// Kirim tombstone (soft delete) dengan isolasi per-baris seperti di atas.
+  Future<void> _sendDeleteWithIsolation(
+    String table,
+    List<Map<String, dynamic>> batch,
+    String stamp,
+  ) async {
+    final client = _client;
+    if (client == null) return;
+    final ids = batch.map((r) => r['id'].toString()).toList();
+    try {
+      await client
+          .from(table)
+          .update({
+            'deleted_at': DateTime.now().toUtc().toIso8601String(),
+            // Tombstone juga perlu updated_at lebih baru agar ter-tarik
+            // oleh `>` cursor di device lain.
+            'updated_at': stamp,
+          })
+          .inFilter('id', ids)
+          .timeout(_netTimeout);
+      for (final r in batch) {
+        await _db.deleteOutboxEntry(r['_eid'] as int);
+      }
+      return;
+    } catch (e, st) {
+      debugPrint('SYNC delete $table (${ids.length}): $e\n$st');
+      _lastError = '$e';
+    }
+    for (final id in ids) {
+      try {
+        await client
+            .from(table)
+            .update({
+              'deleted_at': DateTime.now().toUtc().toIso8601String(),
+              'updated_at': stamp,
+            })
+            .inFilter('id', [id])
+            .timeout(_netTimeout);
+        final eid =
+            batch.firstWhere((r) => r['id'].toString() == id)['_eid'] as int;
+        await _db.deleteOutboxEntry(eid);
+      } catch (e, st) {
+        debugPrint('SYNC delete single $table #$id: $e\n$st');
+        _lastError = '$e';
+      }
+    }
   }
 
   @override

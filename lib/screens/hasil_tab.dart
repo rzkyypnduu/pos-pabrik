@@ -2026,34 +2026,34 @@ class _SisaBarangSectionState extends State<_SisaBarangSection> {
                 if (isMobile)
                   Column(
                     children: [
-                      DropdownButtonFormField<int>(
-                        initialValue: _isCustom ? -1 : _selectedProductId,
-                        decoration: const InputDecoration(
-                          labelText: 'Produk',
-                          isDense: true,
-                        ),
-                        items: [
-                          ...prodProv.products.map(
-                            (p) => DropdownMenuItem(
-                              value: p.id,
-                              child: Text(p.name),
+                        DropdownButtonFormField<int>(
+                          initialValue: _isCustom ? -1 : _selectedProductId,
+                          decoration: const InputDecoration(
+                            labelText: 'Produk',
+                            isDense: true,
+                          ),
+                          items: [
+                            ...prodProv.products.map(
+                              (p) => DropdownMenuItem(
+                                value: p.id,
+                                child: Text(p.name),
+                              ),
                             ),
-                          ),
-                          const DropdownMenuItem(
-                            value: -1,
-                            child: Text('Lainnya...'),
-                          ),
-                        ],
-                        onChanged: (val) => setState(() {
-                          if (val == -1) {
-                            _isCustom = true;
-                            _selectedProductId = null;
-                          } else {
-                            _isCustom = false;
-                            _selectedProductId = val;
-                          }
-                        }),
-                      ),
+                            const DropdownMenuItem(
+                              value: -1,
+                              child: Text('Lainnya...'),
+                            ),
+                          ],
+                          onChanged: (val) => setState(() {
+                            if (val == -1) {
+                              _isCustom = true;
+                              _selectedProductId = null;
+                            } else {
+                              _isCustom = false;
+                              _selectedProductId = val;
+                            }
+                          }),
+                        ),
                         if (_isCustom) ...[
                         const SizedBox(height: 8),
                         TextField(

@@ -15,12 +15,17 @@ import '../models/customer_ledger.dart';
 import '../models/personal_ledger.dart';
 import '../models/saldo_deduction.dart';
 import '../models/expense.dart';
+import '../constants/formatters.dart';
 
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
   static Database? _database;
+  bool _isClosed = false;
 
   DatabaseHelper._init();
+
+  /// True jika database sedang ditutup (export/import).
+  bool get isClosed => _isClosed;
 
   static void initialize() {
     if (kIsWeb) return;
@@ -41,6 +46,7 @@ class DatabaseHelper {
   }
 
   Future<void> closeDatabase() async {
+    _isClosed = true;
     if (_database != null) {
       final db = _database!;
       _database = null;
@@ -49,28 +55,36 @@ class DatabaseHelper {
   }
 
   Future<String> exportDatabase(String destPath) async {
-    await closeDatabase();
     final src = await getDatabaseFilePath();
     if (!File(src).existsSync()) {
       throw Exception('Database belum ditemukan');
     }
+    // Force WAL checkpoint supaya semua data tertulis ke file utama
+    // sebelum copy, TANPA menutup database (sync tetap jalan).
+    try {
+      final db = await database;
+      await db.execute('PRAGMA wal_checkpoint(TRUNCATE)');
+    } catch (_) {}
     await File(src).copy(destPath);
-    await database;
     return destPath;
   }
 
   Future<Uint8List> exportDatabaseBytes() async {
-    await closeDatabase();
     final src = await getDatabaseFilePath();
     if (!File(src).existsSync()) {
       throw Exception('Database belum ditemukan');
     }
+    // Force WAL checkpoint supaya semua data tertulis ke file utama.
+    try {
+      final db = await database;
+      await db.execute('PRAGMA wal_checkpoint(TRUNCATE)');
+    } catch (_) {}
     final bytes = await File(src).readAsBytes();
-    await database;
     return bytes;
   }
 
   Future<void> shutdownExport(String destPath) async {
+    // Digunakan saat app mau tutup (close). Tutup DB dulu supaya file aman.
     await closeDatabase();
     final src = await getDatabaseFilePath();
     if (!File(src).existsSync()) {
@@ -83,6 +97,8 @@ class DatabaseHelper {
     if (!File(srcPath).existsSync()) {
       throw Exception('File tidak ditemukan');
     }
+    // Tutup database lama, timpa file, lalu buka ulang.
+    // Sync engine akan otomatis pause karena _busy / _client == null.
     await closeDatabase();
     final dest = await getDatabaseFilePath();
     await Directory(dirname(dest)).create(recursive: true);
@@ -93,8 +109,29 @@ class DatabaseHelper {
 
   Future<Database> get database async {
     if (_database != null) return _database!;
+    _isClosed = false;
     _database = await _initDB('pos_krupuk.db');
+    await _ensureHistoricalFreeze();
     return _database!;
+  }
+
+  Future<void> _ensureHistoricalFreeze() async {
+    final db = _database!;
+    // Always unfreeze today (active working day)
+    final today = DateTime.now().toIso8601String().substring(0, 10);
+    for (final table in _slotTables) {
+      await db.update(table, {'frozen': 0},
+          where: 'date = ?', whereArgs: [today]);
+    }
+    // One-time: freeze all historical dates
+    final flag = await getSyncMeta('freeze_v1_done');
+    if (flag != null) return;
+    for (final table in _slotTables) {
+      await db.update(table, {'frozen': 1},
+          where: 'date < ? AND date != "" AND date IS NOT NULL',
+          whereArgs: [today]);
+    }
+    await setSyncMeta('freeze_v1_done', '1');
   }
 
   Future<Database> _initDB(String filePath) async {
@@ -111,7 +148,7 @@ class DatabaseHelper {
     }
     return await openDatabase(
       path,
-      version: 6,
+      version: 7,
       onCreate: _createDB,
       onUpgrade: _upgradeDB,
     );
@@ -121,6 +158,16 @@ class DatabaseHelper {
 
   static final Uuid _uuidGen = Uuid();
   String newUuid() => _uuidGen.v4();
+
+  /// UUID DETERMINISTIK untuk slot materialisasi "copy & putus". Semua HP
+  /// menghasilkan nilai yang SAMA untuk (table, date, name), sehingga slot
+  /// yang sama dibuat sebagai baris yang sama (bukan uuid acak) dan data
+  /// tidak "nyasar" antar HP / hari.
+  String slotUuid(String table, String date, String? name) {
+    final s = StringBuffer('$table|$date');
+    if (name != null && name.isNotEmpty) s.write('|$name');
+    return _uuidGen.v5(Namespace.url.value, s.toString());
+  }
 
   // ==================== SYNC INFRASTRUCTURE ====================
 
@@ -156,6 +203,9 @@ class DatabaseHelper {
     if (table == 'sale_items') {
       final sid = p.remove('sale_id');
       if (sid != null && sid is int) {
+        // Simpan FK lokal agar saat push bisa di-resolve ulang jika uuid
+        // induk belum ada / berubah (mis. sesaat setelah import/data lama).
+        p['_local_sale_id'] = sid;
         final rows = await database.then(
           (d) => d.query('sales', columns: ['uuid'], where: 'id = ?', whereArgs: [sid]),
         );
@@ -164,6 +214,7 @@ class DatabaseHelper {
       }
       final pid = p.remove('product_id');
       if (pid != null && pid is int) {
+        p['_local_product_id'] = pid;
         final rows = await database.then(
           (d) => d.query('products', columns: ['uuid'], where: 'id = ?', whereArgs: [pid]),
         );
@@ -173,6 +224,7 @@ class DatabaseHelper {
     } else if (table == 'customer_ledgers') {
       final sid = p.remove('sale_id');
       if (sid != null && sid is int) {
+        p['_local_sale_id'] = sid;
         final rows = await database.then(
           (d) => d.query('sales', columns: ['uuid'], where: 'id = ?', whereArgs: [sid]),
         );
@@ -197,6 +249,11 @@ class DatabaseHelper {
     );
     return rows.isEmpty ? null : rows.first['uuid'] as String?;
   }
+
+  /// UUID terkini untuk baris induk (dipakai push untuk resolve-ulang FK).
+  Future<String?> saleUuidByLocalId(int id) => _uuidOf('sales', id);
+
+  Future<String?> productUuidByLocalId(int id) => _uuidOf('products', id);
 
   Future<void> _enqueueDeleteById(String table, int id) async {
     final u = await _uuidOf(table, id);
@@ -341,6 +398,15 @@ class DatabaseHelper {
 
   bool _isSlotTable(String table) => _slotTables.contains(table);
 
+  /// Subset slot yang identitasnya per tanggal + nama (bukan per tanggal saja).
+  static const _nameSlotTables = {
+    'stock_managements',
+    'stock_remainings',
+    'personal_ledgers',
+  };
+
+  bool _isNameSlot(String table) => _nameSlotTables.contains(table);
+
   DateTime _parseTs(String? s) {
     if (s == null || s.isEmpty) return _epoch;
     return DateTime.tryParse(s) ?? _epoch;
@@ -383,6 +449,75 @@ class DatabaseHelper {
       whereArgs: name == null || name.isEmpty ? [date] : [date, name],
     );
     return rows.map((r) => r['id'] as int).toList();
+  }
+
+  /// Baris terakhir per slot untuk sumber "copy & putus": hanya mengambil
+  /// baris dari tanggal TERDEKAT sebelum [beforeDate] (bukan semua tanggal
+  /// di masa lalu). Ini mencegah record dari tanggal jauh/empty-date (yang
+  /// sync dari HP lain) ikut "nyasar" ke tanggal baru.
+  Future<List<Map<String, dynamic>>> _latestSlotRows(
+    String table,
+    String beforeDate,
+  ) async {
+    final db = await database;
+    // Step 1: Cari tanggal terakhir yang valid sebelum beforeDate
+    final latestDateRow = await db.rawQuery(
+      "SELECT MAX(date) as latest_date FROM $table WHERE date < ? AND date != '' AND date IS NOT NULL",
+      [beforeDate],
+    );
+    final latestDate = latestDateRow.isNotEmpty
+        ? latestDateRow.first['latest_date'] as String?
+        : null;
+    if (latestDate == null || latestDate.isEmpty) return [];
+
+    // Step 2: Ambil hanya record dari tanggal tersebut
+    final maps = await db.query(
+      table,
+      where: 'date = ?',
+      whereArgs: [latestDate],
+      orderBy: 'updated_at DESC, id DESC',
+    );
+    final bySlot = <String, Map<String, dynamic>>{};
+    for (final m in maps) {
+      final isNamed = _isNameSlot(table);
+      final nm = isNamed ? (m['name'] as String? ?? '') : '';
+      final key = isNamed ? nm : latestDate;
+      bySlot.putIfAbsent(key, () => m);
+    }
+    return bySlot.values.toList();
+  }
+
+  Future<String?> _latestSlotDate(String table, String beforeDate) async {
+    final db = await database;
+    final r = await db.rawQuery(
+      "SELECT MAX(date) as d FROM $table WHERE date < ? AND date != '' AND date IS NOT NULL",
+      [beforeDate],
+    );
+    return r.isNotEmpty ? r.first['d'] as String? : null;
+  }
+
+  /// Baris slot TERAKHIR per nama dalam rentang bulan (untuk ringkasan):
+  /// diambil baris dengan tanggal terbaru, dan di antara duplikat slot yang
+  /// sama dipakai yang `updated_at`-nya terbesar.
+  Future<List<Map<String, dynamic>>> _latestNameRowsInMonth(
+    String table,
+    String startDate,
+    String endDate,
+  ) async {
+    final db = await database;
+    final maps = await db.query(
+      table,
+      where: 'date BETWEEN ? AND ?',
+      whereArgs: [startDate, endDate],
+      orderBy: 'date DESC, updated_at DESC, id DESC',
+    );
+    final byName = <String, Map<String, dynamic>>{};
+    for (final m in maps) {
+      final nm = m['name'] as String? ?? '';
+      if (nm.isEmpty) continue;
+      byName.putIfAbsent(nm, () => m);
+    }
+    return byName.values.toList();
   }
 
   Future<bool> _localRowNewerThan(
@@ -512,21 +647,28 @@ class DatabaseHelper {
 
     final remoteTs = _parseTs(row['updated_at'] as String?);
 
+    // ---- Resolve FK: sale_items & customer_ledgers ----
     if (table == 'sale_items') {
       final saleUuid = row.remove('sale_id') as String?;
       if (saleUuid != null && saleUuid.isNotEmpty) {
         final saleId = await _localSaleIdByUuid(saleUuid);
         if (saleId == null) {
-          // Induk belum ada lokal -> antre, jangan buang baris.
           await _savePendingRemote(table, uuid, origPayload);
           return false;
         }
         row['sale_id'] = saleId;
+      } else {
+        // sale_id kosong/null dari remote -> baris tidak valid, skip
+        return true;
       }
       final productUuid = row.remove('product_id') as String?;
       if (productUuid != null && productUuid.isNotEmpty) {
         final productId = await _localProductIdByUuid(productUuid);
-        if (productId != null) row['product_id'] = productId;
+        if (productId != null) {
+          row['product_id'] = productId;
+        } else {
+          row['product_id'] = null;
+        }
       }
     } else if (table == 'customer_ledgers') {
       final saleUuid = row.remove('sale_id') as String?;
@@ -542,14 +684,23 @@ class DatabaseHelper {
 
     row.remove('deleted_at');
     row.remove('updated_by');
+    row.remove('frozen');
     final savedTs = row['updated_at'] as String?;
     row['updated_at'] = (savedTs == null || savedTs.isEmpty)
         ? _now()
         : savedTs;
 
+    // ---- Baris sudah ada secara lokal (UUID sama) ----
     final existingId = await _localIdByUuid(table, uuid);
     if (existingId != null) {
-      // Last-writer-wins: jangan turunkan baris yang diedit lebih baru lokal.
+      // Frozen = tidak boleh di-overwrite oleh remote
+      if (_isSlotTable(table)) {
+        final frozenRow = await db.query(table, columns: ['frozen'],
+            where: 'id = ?', whereArgs: [existingId]);
+        if (frozenRow.isNotEmpty && (frozenRow.first['frozen'] as int? ?? 0) == 1) {
+          return true;
+        }
+      }
       if (await _localRowNewerThan(table, existingId, remoteTs)) return true;
       row.remove('created_at');
       row['id'] = existingId;
@@ -558,14 +709,13 @@ class DatabaseHelper {
       return true;
     }
 
+    // ---- Slot tables: deduplikasi by date (+ name) ----
     if (_isSlotTable(table)) {
       final date = row['date'] as String?;
       if (date == null || date.isEmpty) return true;
       final name = row['name'] as String?;
       final localIds = await _slotLocalIds(table, date, name);
       if (localIds.isEmpty) {
-        // Slot kosong: jangan tarik kembali jika slot sengaja dihapus dgn ts
-        // yang lebih baru daripada baris remote ini.
         if ((await slotDeletedSince(table, date, name)).isAfter(remoteTs)) {
           return true;
         }
@@ -573,9 +723,18 @@ class DatabaseHelper {
         await deletePendingRemote(table, uuid);
         return true;
       }
-      // Slot terisi baris lain (uji uuid lain): ambil yang terbaru.
+      // Frozen = tidak boleh di-overwrite oleh remote
+      final frozenCheck = await db.query(table, columns: ['frozen'],
+          where: 'date = ? ${_isNameSlot(table) ? 'AND name = ?' : ''}',
+          whereArgs: _isNameSlot(table) ? [date, name] : [date]);
+      if (frozenCheck.any((r) => (r['frozen'] as int? ?? 0) == 1)) {
+        return true;
+      }
+      // Slot sudah terisi: bandingkan updated_at (LWW).
+      // Ambil max updated_at dari SEMUA baris slot (bukan hanya satu).
       final maxLocal = await _maxSlotUpdatedAt(table, date, name);
       if (maxLocal.isAfter(remoteTs)) return true;
+      // Remote lebih baru: hapus semua baris lama, insert remote.
       for (final id in localIds) {
         await db.delete(table, where: 'id = ?', whereArgs: [id]);
       }
@@ -604,12 +763,31 @@ class DatabaseHelper {
       }
       final name = row?['name'] as String?;
       final tomb = _parseTs(row?['updated_at'] as String?);
+      // Cek apakah tombstone ini UUID-nya ada di lokal.
+      // Jika TIDAK ada, ini tombstone lama (stale) dari record yang sudah
+      // di-replace oleh materialisasi "copy & putus". SKIP saja — jangan
+      // hapus record materialisasi baru yang UUID-nya beda.
+      final tombLocalId = await _localIdByUuid(table, uuid);
+      if (tombLocalId == null) {
+        // Tombstone tidak match lokal. Update marker tapi jangan hapus.
+        if (tomb.isAfter(await slotDeletedSince(table, date, name))) {
+          await markSlotDeleted(table, date, name, at: tomb);
+        }
+        return;
+      }
       final localIds = await _slotLocalIds(table, date, name);
       if (localIds.isEmpty) {
         await db.delete(table, where: 'uuid = ?', whereArgs: [uuid]);
         if (tomb.isAfter(await slotDeletedSince(table, date, name))) {
           await markSlotDeleted(table, date, name, at: tomb);
         }
+        return;
+      }
+      // Frozen = jangan hapus
+      final frozenCheck = await db.query(table, columns: ['frozen'],
+          where: 'date = ? ${_isNameSlot(table) ? 'AND name = ?' : ''}',
+          whereArgs: _isNameSlot(table) ? [date, name] : [date]);
+      if (frozenCheck.any((r) => (r['frozen'] as int? ?? 0) == 1)) {
         return;
       }
       // Delete = peniadaan seluruh slot; hanya berlaku jika ts-nya lebih baru
@@ -722,6 +900,22 @@ class DatabaseHelper {
     if (oldVersion < 6) {
       await _createSyncTables(db);
     }
+    if (oldVersion < 7) {
+      for (final table in _slotTables) {
+        final cols = await db.rawQuery('PRAGMA table_info($table)');
+        final names = cols.map((c) => c['name']).toSet();
+        if (!names.contains('frozen')) {
+          await db.execute('ALTER TABLE $table ADD COLUMN frozen INTEGER DEFAULT 0');
+        }
+      }
+      // Freeze all historical dates (before today) on upgrade
+      final today = DateTime.now().toIso8601String().substring(0, 10);
+      for (final table in _slotTables) {
+        await db.update(table, {'frozen': 1},
+            where: 'date < ? AND date != "" AND date IS NOT NULL',
+            whereArgs: [today]);
+      }
+    }
   }
 
   Future<void> _createSyncTables(Database db) async {
@@ -747,22 +941,22 @@ class DatabaseHelper {
       '''CREATE TABLE sale_items (id INTEGER PRIMARY KEY AUTOINCREMENT, sale_id INTEGER NOT NULL, product_id INTEGER, name TEXT NOT NULL, qty REAL DEFAULT 0, price INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT, uuid TEXT, deleted_at TEXT, FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE)''',
     );
     await db.execute(
-      '''CREATE TABLE oil_stocks (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, qty REAL DEFAULT 0, price REAL DEFAULT 0, created_at TEXT, updated_at TEXT, uuid TEXT, deleted_at TEXT)''',
+      '''CREATE TABLE oil_stocks (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, qty REAL DEFAULT 0, price REAL DEFAULT 0, created_at TEXT, updated_at TEXT, uuid TEXT, deleted_at TEXT, frozen INTEGER DEFAULT 0)''',
     );
     await db.execute(
-      '''CREATE TABLE stock_managements (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, name TEXT NOT NULL, qty REAL DEFAULT 0, price INTEGER DEFAULT 0, batches TEXT, created_at TEXT, updated_at TEXT, uuid TEXT, deleted_at TEXT)''',
+      '''CREATE TABLE stock_managements (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, name TEXT NOT NULL, qty REAL DEFAULT 0, price INTEGER DEFAULT 0, batches TEXT, created_at TEXT, updated_at TEXT, uuid TEXT, deleted_at TEXT, frozen INTEGER DEFAULT 0)''',
     );
     await db.execute(
-      '''CREATE TABLE stock_remainings (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, name TEXT NOT NULL, qty REAL DEFAULT 0, price INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT, uuid TEXT, deleted_at TEXT)''',
+      '''CREATE TABLE stock_remainings (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, name TEXT NOT NULL, qty REAL DEFAULT 0, price INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT, uuid TEXT, deleted_at TEXT, frozen INTEGER DEFAULT 0)''',
     );
     await db.execute(
       '''CREATE TABLE customer_ledgers (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, name TEXT NOT NULL, amount INTEGER DEFAULT 0, type TEXT NOT NULL, note TEXT, sale_id INTEGER, created_at TEXT, updated_at TEXT, uuid TEXT, deleted_at TEXT, FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE)''',
     );
     await db.execute(
-      '''CREATE TABLE personal_ledgers (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, name TEXT NOT NULL, amount INTEGER DEFAULT 0, note TEXT, created_at TEXT, updated_at TEXT, uuid TEXT, deleted_at TEXT)''',
+      '''CREATE TABLE personal_ledgers (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, name TEXT NOT NULL, amount INTEGER DEFAULT 0, note TEXT, created_at TEXT, updated_at TEXT, uuid TEXT, deleted_at TEXT, frozen INTEGER DEFAULT 0)''',
     );
     await db.execute(
-      '''CREATE TABLE saldo_deductions (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, a INTEGER DEFAULT 0, b INTEGER DEFAULT 0, note TEXT, created_at TEXT, updated_at TEXT, uuid TEXT, deleted_at TEXT)''',
+      '''CREATE TABLE saldo_deductions (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, a INTEGER DEFAULT 0, b INTEGER DEFAULT 0, note TEXT, created_at TEXT, updated_at TEXT, uuid TEXT, deleted_at TEXT, frozen INTEGER DEFAULT 0)''',
     );
     await db.execute(
       '''CREATE TABLE expenses (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, amount INTEGER DEFAULT 0, note TEXT, created_at TEXT, updated_at TEXT, uuid TEXT, deleted_at TEXT)''',
@@ -886,12 +1080,53 @@ class DatabaseHelper {
 
   Future<void> setSaleDebtPaid(int saleId, bool value) async {
     final db = await database;
-    await db.update(
-      'sales',
-      {'debt_paid': value ? 1 : 0},
-      where: 'id = ?',
-      whereArgs: [saleId],
-    );
+    if (value) {
+      // Cari hutang belum lunas dari customer yang sama (sebelum tanggal ini)
+      final saleRows = await db.query('sales',
+          columns: ['name', 'date', 'paid', 'rounded_total'],
+          where: 'id = ?', whereArgs: [saleId]);
+      if (saleRows.isEmpty) return;
+      final sale = saleRows.first;
+      final prevSale = await getPreviousUnpaidSale(
+          sale['name'] as String, sale['date'] as String);
+      final prevDiff = prevSale?.diff ?? 0;
+      // debtPaidAmount = jumlah yang dialokasikan ke bayar hutang kemarin
+      final paid = sale['paid'] as int;
+      final debtPaidAmount = prevDiff > 0
+          ? (paid > prevDiff ? prevDiff : paid)
+          : 0;
+      final roundedTotal = sale['rounded_total'] as int;
+      final newDiff = roundedTotal - (paid - debtPaidAmount);
+      await db.update(
+        'sales',
+        {
+          'debt_paid': 1,
+          'debt_paid_amount': debtPaidAmount,
+          'diff': newDiff,
+        },
+        where: 'id = ?',
+        whereArgs: [saleId],
+      );
+    } else {
+      // Reset: semua bayar untuk hari ini
+      final saleRows = await db.query('sales',
+          columns: ['paid', 'rounded_total'],
+          where: 'id = ?', whereArgs: [saleId]);
+      if (saleRows.isEmpty) return;
+      final sale = saleRows.first;
+      final paid = sale['paid'] as int;
+      final roundedTotal = sale['rounded_total'] as int;
+      await db.update(
+        'sales',
+        {
+          'debt_paid': 0,
+          'debt_paid_amount': 0,
+          'diff': roundedTotal - paid,
+        },
+        where: 'id = ?',
+        whereArgs: [saleId],
+      );
+    }
     await _enqueueRow('sales', 'update', saleId);
   }
 
@@ -1058,30 +1293,39 @@ class DatabaseHelper {
   }
 
   // ==================== OIL STOCKS ====================
-  Future<int> insertOilStock(OilStock oil) async {
+  Future<int> insertOilStock(OilStock oil, {String? uuid}) async {
     final db = await database;
     final data = oil.toMap();
     data.remove('id');
-    final uuid = newUuid();
-    data['uuid'] = uuid;
+    data.remove('frozen');
+    final rowUuid = uuid ?? newUuid();
+    data['uuid'] = rowUuid;
     data['created_at'] = _now();
     data['updated_at'] = _now();
     final id = await db.insert('oil_stocks', data);
-    await _enqueueOutbox('oil_stocks', 'insert', data, uuid);
+    await _enqueueOutbox('oil_stocks', 'insert', data, rowUuid);
     return id;
   }
 
   Future<int> updateOilStock(OilStock oil) async {
     final db = await database;
+    // Auto-unfreeze jika frozen (edit transparan)
+    final wasFrozen = await _isRowFrozen(db, 'oil_stocks', oil.id);
+    if (wasFrozen) await unfreezeSlot('oil_stocks', oil.date ?? '');
     final data = oil.toMap();
     data['updated_at'] = _now();
+    data.remove('frozen');
     final id = await db.update(
       'oil_stocks',
       data,
       where: 'id = ?',
       whereArgs: [oil.id],
     );
-    if (oil.id != null) await _enqueueRow('oil_stocks', 'update', oil.id!);
+    if (oil.id != null) {
+      await _enqueueRow('oil_stocks', 'update', oil.id!);
+    }
+    // Auto re-freeze
+    if (wasFrozen) await freezeSlot('oil_stocks', oil.date ?? '');
     return id;
   }
 
@@ -1111,16 +1355,10 @@ class DatabaseHelper {
   }
 
   Future<OilStock?> getLatestOilStock(String beforeDate) async {
-    final db = await database;
-    final maps = await db.query(
-      'oil_stocks',
-      where: 'date < ?',
-      whereArgs: [beforeDate],
-      orderBy: 'date DESC, id DESC',
-      limit: 1,
-    );
-    if (maps.isEmpty) return null;
-    return OilStock.fromMap(maps.first);
+    final raw = await _latestSlotRows('oil_stocks', beforeDate);
+    // Satu baris slot pertama = tanggal terbaru dgn updated_at terbesar.
+    if (raw.isEmpty) return null;
+    return OilStock.fromMap(raw.first);
   }
 
   /// Copy & putus minyak: jika [date] belum punya catatan, salin nilai hari
@@ -1180,17 +1418,86 @@ class DatabaseHelper {
     return DateTime.tryParse(v) ?? _epoch;
   }
 
+  Future<void> clearMaterializedFlag(String table, String date) async {
+    final key = 'mater_${table}_$date';
+    final db = await database;
+    await db.delete('sync_meta', where: 'key = ?', whereArgs: [key]);
+  }
+
+  Future<void> clearSlotDeletedFlags(String table, String date) async {
+    final db = await database;
+    await db.delete('sync_meta',
+        where: "key LIKE ? AND key LIKE ?",
+        whereArgs: ['del|$table|$date%', 'del|$table|$date|%']);
+  }
+
+  Future<void> clearAllSlotFlags(String table, String date) async {
+    await clearMaterializedFlag(table, date);
+    await clearSlotDeletedFlags(table, date);
+  }
+
+  // ==================== FREEZE HELPERS ====================
+  Future<void> freezeSlot(String table, String date, {String? name}) async {
+    final db = await database;
+    if (_isNameSlot(table) && name != null) {
+      await db.update(table, {'frozen': 1},
+          where: 'date = ? AND name = ?', whereArgs: [date, name]);
+    } else {
+      await db.update(table, {'frozen': 1},
+          where: 'date = ?', whereArgs: [date]);
+    }
+  }
+
+  Future<void> unfreezeSlot(String table, String date, {String? name}) async {
+    final db = await database;
+    if (_isNameSlot(table) && name != null) {
+      await db.update(table, {'frozen': 0},
+          where: 'date = ? AND name = ?', whereArgs: [date, name]);
+    } else {
+      await db.update(table, {'frozen': 0},
+          where: 'date = ?', whereArgs: [date]);
+    }
+  }
+
+  Future<void> freezeDateAllSlots(String date) async {
+    for (final table in _slotTables) {
+      await freezeSlot(table, date);
+    }
+  }
+
+  Future<bool> _isRowFrozen(Database db, String table, int? id) async {
+    if (id == null) return false;
+    final r = await db.query(table, columns: ['frozen'],
+        where: 'id = ?', whereArgs: [id]);
+    return r.isNotEmpty && (r.first['frozen'] as int? ?? 0) == 1;
+  }
+
   Future<OilStock?> materializeOilStock(String date) async {
-    final existing = await getOilStocksByDate(date);
+    var existing = await getOilStocksByDate(date);
     if (existing.isNotEmpty) {
       await markDayMaterialized('oil_stocks', date);
       return existing.first;
     }
-    if (await isDayMaterialized('oil_stocks', date)) return null;
+    // Flag set tapi data kosong (habis dihapus sync/tombstone) → clear & retry
+    if (await isDayMaterialized('oil_stocks', date)) {
+      await clearAllSlotFlags('oil_stocks', date);
+      existing = await getOilStocksByDate(date);
+      if (existing.isNotEmpty) {
+        await markDayMaterialized('oil_stocks', date);
+        return existing.first;
+      }
+    }
     final latest = await getLatestOilStock(date);
     if (latest == null) return null;
-    await insertOilStock(OilStock(date: date, qty: latest.qty, price: latest.price));
+    await insertOilStock(
+      OilStock(date: date, qty: latest.qty, price: latest.price),
+      uuid: slotUuid('oil_stocks', date, null),
+    );
     await markDayMaterialized('oil_stocks', date);
+    final srcDate = await _latestSlotDate('oil_stocks', date);
+    if (srcDate != null && srcDate.isNotEmpty) {
+      await freezeSlot('oil_stocks', srcDate);
+    }
     final rows = await getOilStocksByDate(date);
     return rows.isNotEmpty ? rows.first : null;
   }
@@ -1225,23 +1532,27 @@ class DatabaseHelper {
   }
 
   // ==================== STOCK MANAGEMENTS ====================
-  Future<int> insertStockManagement(StockManagement sm) async {
+  Future<int> insertStockManagement(StockManagement sm, {String? uuid}) async {
     final db = await database;
     final data = sm.toMap();
     data.remove('id');
-    final uuid = newUuid();
-    data['uuid'] = uuid;
+    data.remove('frozen');
+    final rowUuid = uuid ?? newUuid();
+    data['uuid'] = rowUuid;
     data['created_at'] = _now();
     data['updated_at'] = _now();
     final id = await db.insert('stock_managements', data);
-    await _enqueueOutbox('stock_managements', 'insert', data, uuid);
+    await _enqueueOutbox('stock_managements', 'insert', data, rowUuid);
     return id;
   }
 
   Future<int> updateStockManagement(StockManagement sm) async {
     final db = await database;
+    final wasFrozen = await _isRowFrozen(db, 'stock_managements', sm.id);
+    if (wasFrozen) await unfreezeSlot('stock_managements', sm.date ?? '', name: sm.name);
     final data = sm.toMap();
     data['updated_at'] = _now();
+    data.remove('frozen');
     final id = await db.update(
       'stock_managements',
       data,
@@ -1251,6 +1562,7 @@ class DatabaseHelper {
     if (sm.id != null) {
       await _enqueueRow('stock_managements', 'update', sm.id!);
     }
+    if (wasFrozen) await freezeSlot('stock_managements', sm.date ?? '', name: sm.name);
     return id;
   }
 
@@ -1282,26 +1594,27 @@ class DatabaseHelper {
   Future<List<StockManagement>> getLatestStockManagements(
     String beforeDate,
   ) async {
-    final db = await database;
-    final maps = await db.query(
-      'stock_managements',
-      where: 'date < ?',
-      whereArgs: [beforeDate],
-      orderBy: 'date DESC, id DESC',
-    );
-    return maps.map((m) => StockManagement.fromMap(m)).toList();
+    final raw = await _latestSlotRows('stock_managements', beforeDate);
+    return raw.map((m) => StockManagement.fromMap(m)).toList();
   }
 
   /// Copy & putus stok pemegang: jika [date] belum punya catatan, salin
   /// record terakhir tiap pemegang (dengan nilai sak-nya) menjadi milik [date]
   /// dengan id record & id batch baru.
   Future<List<StockManagement>> materializeStockManagements(String date) async {
-    final existing = await getStockManagementsByDate(date);
+    var existing = await getStockManagementsByDate(date);
     if (existing.isNotEmpty) {
       await markDayMaterialized('stock_managements', date);
       return existing;
     }
-    if (await isDayMaterialized('stock_managements', date)) return [];
+    if (await isDayMaterialized('stock_managements', date)) {
+      await clearAllSlotFlags('stock_managements', date);
+      existing = await getStockManagementsByDate(date);
+      if (existing.isNotEmpty) {
+        await markDayMaterialized('stock_managements', date);
+        return existing;
+      }
+    }
     final latestAll = await getLatestStockManagements(date);
     if (latestAll.isEmpty) return [];
     final byName = <String, StockManagement>{};
@@ -1310,26 +1623,36 @@ class DatabaseHelper {
     }
     for (final src in byName.values) {
       final srcBatches = src.batches ?? [];
-      final copiedBatches = <Map<String, dynamic>>[
-        for (int i = 0; i < srcBatches.length; i++)
-          {
-            'id': '${DateTime.now().microsecondsSinceEpoch}_$i',
-            'date': date,
-            'price': (srcBatches[i]['price'] as num?)?.toInt() ?? src.price,
-            'sacks': [
-              for (final s in ((srcBatches[i]['sacks'] as List?) ?? []))
-                (s as num).toDouble(),
-            ],
-          },
-      ];
-      await insertStockManagement(StockManagement(
-        date: date,
-        name: src.name,
-        price: src.price,
-        batches: copiedBatches,
-      ));
+      final copiedBatches = srcBatches.isNotEmpty
+          ? <Map<String, dynamic>>[
+              for (int i = 0; i < srcBatches.length; i++)
+                {
+                  'id': '${DateTime.now().microsecondsSinceEpoch}_$i',
+                  'date': date,
+                  'price': (srcBatches[i]['price'] as num?)?.toInt() ?? src.price,
+                  'sacks': [
+                    for (final s in ((srcBatches[i]['sacks'] as List?) ?? []))
+                      (s as num).toDouble(),
+                  ],
+                },
+            ]
+          : null;
+      await insertStockManagement(
+        StockManagement(
+          date: date,
+          name: src.name,
+          qty: src.qty,
+          price: src.price,
+          batches: copiedBatches,
+        ),
+        uuid: slotUuid('stock_managements', date, src.name),
+      );
     }
     await markDayMaterialized('stock_managements', date);
+    final srcDate = await _latestSlotDate('stock_managements', date);
+    if (srcDate != null && srcDate.isNotEmpty) {
+      await freezeSlot('stock_managements', srcDate);
+    }
     return getStockManagementsByDate(date);
   }
 
@@ -1338,15 +1661,9 @@ class DatabaseHelper {
     String startDate,
     String endDate,
   ) async {
-    final all = await getStockManagementsByMonth(startDate, endDate);
-    final byName = <String, StockManagement>{};
-    for (final sm in all) {
-      final cur = byName[sm.name];
-      if (cur == null || (sm.date ?? '').compareTo(cur.date ?? '') > 0) {
-        byName[sm.name] = sm;
-      }
-    }
-    return byName.values.toList();
+    final raw =
+        await _latestNameRowsInMonth('stock_managements', startDate, endDate);
+    return raw.map((m) => StockManagement.fromMap(m)).toList();
   }
 
   Future<int> deleteStockManagement(int id) async {
@@ -1380,16 +1697,17 @@ class DatabaseHelper {
   }
 
   // ==================== STOCK REMAININGS ====================
-  Future<int> insertStockRemaining(StockRemaining sr) async {
+  Future<int> insertStockRemaining(StockRemaining sr, {String? uuid}) async {
     final db = await database;
     final data = sr.toMap();
     data.remove('id');
-    final uuid = newUuid();
-    data['uuid'] = uuid;
+    data.remove('frozen');
+    final rowUuid = uuid ?? newUuid();
+    data['uuid'] = rowUuid;
     data['created_at'] = _now();
     data['updated_at'] = _now();
     final id = await db.insert('stock_remainings', data);
-    await _enqueueOutbox('stock_remainings', 'insert', data, uuid);
+    await _enqueueOutbox('stock_remainings', 'insert', data, rowUuid);
     return id;
   }
 
@@ -1421,25 +1739,26 @@ class DatabaseHelper {
   Future<List<StockRemaining>> getLatestStockRemainings(
     String beforeDate,
   ) async {
-    final db = await database;
-    final maps = await db.query(
-      'stock_remainings',
-      where: 'date < ?',
-      whereArgs: [beforeDate],
-      orderBy: 'date DESC, id DESC',
-    );
-    return maps.map((m) => StockRemaining.fromMap(m)).toList();
+    final raw = await _latestSlotRows('stock_remainings', beforeDate);
+    return raw.map((m) => StockRemaining.fromMap(m)).toList();
   }
 
   /// Copy & putus sisa barang: jika [date] belum punya catatan, salin record
   /// terakhir tiap nama barang menjadi milik [date] (id baru).
   Future<List<StockRemaining>> materializeStockRemainings(String date) async {
-    final existing = await getStockRemainingsByDate(date);
+    var existing = await getStockRemainingsByDate(date);
     if (existing.isNotEmpty) {
       await markDayMaterialized('stock_remainings', date);
       return existing;
     }
-    if (await isDayMaterialized('stock_remainings', date)) return [];
+    if (await isDayMaterialized('stock_remainings', date)) {
+      await clearAllSlotFlags('stock_remainings', date);
+      existing = await getStockRemainingsByDate(date);
+      if (existing.isNotEmpty) {
+        await markDayMaterialized('stock_remainings', date);
+        return existing;
+      }
+    }
     final latestAll = await getLatestStockRemainings(date);
     if (latestAll.isEmpty) return [];
     final byName = <String, StockRemaining>{};
@@ -1447,14 +1766,21 @@ class DatabaseHelper {
       byName.putIfAbsent(sr.name, () => sr);
     }
     for (final src in byName.values) {
-      await insertStockRemaining(StockRemaining(
-        date: date,
-        name: src.name,
-        qty: src.qty,
-        price: src.price,
-      ));
+      await insertStockRemaining(
+        StockRemaining(
+          date: date,
+          name: src.name,
+          qty: src.qty,
+          price: src.price,
+        ),
+        uuid: slotUuid('stock_remainings', date, src.name),
+      );
     }
     await markDayMaterialized('stock_remainings', date);
+    final srcDate = await _latestSlotDate('stock_remainings', date);
+    if (srcDate != null && srcDate.isNotEmpty) {
+      await freezeSlot('stock_remainings', srcDate);
+    }
     return getStockRemainingsByDate(date);
   }
 
@@ -1463,15 +1789,9 @@ class DatabaseHelper {
     String startDate,
     String endDate,
   ) async {
-    final all = await getStockRemainingsByMonth(startDate, endDate);
-    final byName = <String, StockRemaining>{};
-    for (final sr in all) {
-      final cur = byName[sr.name];
-      if (cur == null || (sr.date ?? '').compareTo(cur.date ?? '') > 0) {
-        byName[sr.name] = sr;
-      }
-    }
-    return byName.values.toList();
+    final raw =
+        await _latestNameRowsInMonth('stock_remainings', startDate, endDate);
+    return raw.map((m) => StockRemaining.fromMap(m)).toList();
   }
 
   Future<int> deleteStockRemaining(int id) async {
@@ -1504,8 +1824,11 @@ class DatabaseHelper {
 
   Future<int> updateStockRemaining(StockRemaining sr) async {
     final db = await database;
+    final wasFrozen = await _isRowFrozen(db, 'stock_remainings', sr.id);
+    if (wasFrozen) await unfreezeSlot('stock_remainings', sr.date ?? '', name: sr.name);
     final data = sr.toMap();
     data['updated_at'] = _now();
+    data.remove('frozen');
     final id = await db.update(
       'stock_remainings',
       data,
@@ -1513,6 +1836,7 @@ class DatabaseHelper {
       whereArgs: [sr.id],
     );
     if (sr.id != null) await _enqueueRow('stock_remainings', 'update', sr.id!);
+    if (wasFrozen) await freezeSlot('stock_remainings', sr.date ?? '', name: sr.name);
     return id;
   }
 
@@ -1608,16 +1932,17 @@ class DatabaseHelper {
   }
 
   // ==================== PERSONAL LEDGERS ====================
-  Future<int> insertPersonalLedger(PersonalLedger ledger) async {
+  Future<int> insertPersonalLedger(PersonalLedger ledger, {String? uuid}) async {
     final db = await database;
     final data = ledger.toMap();
     data.remove('id');
-    final uuid = newUuid();
-    data['uuid'] = uuid;
+    data.remove('frozen');
+    final rowUuid = uuid ?? newUuid();
+    data['uuid'] = rowUuid;
     data['created_at'] = _now();
     data['updated_at'] = _now();
     final id = await db.insert('personal_ledgers', data);
-    await _enqueueOutbox('personal_ledgers', 'insert', data, uuid);
+    await _enqueueOutbox('personal_ledgers', 'insert', data, rowUuid);
     return id;
   }
 
@@ -1649,25 +1974,26 @@ class DatabaseHelper {
   Future<List<PersonalLedger>> getLatestPersonalLedgers(
     String beforeDate,
   ) async {
-    final db = await database;
-    final maps = await db.query(
-      'personal_ledgers',
-      where: 'date < ?',
-      whereArgs: [beforeDate],
-      orderBy: 'date DESC, id DESC',
-    );
-    return maps.map((m) => PersonalLedger.fromMap(m)).toList();
+    final raw = await _latestSlotRows('personal_ledgers', beforeDate);
+    return raw.map((m) => PersonalLedger.fromMap(m)).toList();
   }
 
   /// Copy & putus hutang pribadi: jika [date] belum punya catatan, salin
   /// record terakhir tiap nama menjadi milik [date] (id baru).
   Future<List<PersonalLedger>> materializePersonalLedgers(String date) async {
-    final existing = await getPersonalLedgersByDate(date);
+    var existing = await getPersonalLedgersByDate(date);
     if (existing.isNotEmpty) {
       await markDayMaterialized('personal_ledgers', date);
       return existing;
     }
-    if (await isDayMaterialized('personal_ledgers', date)) return [];
+    if (await isDayMaterialized('personal_ledgers', date)) {
+      await clearAllSlotFlags('personal_ledgers', date);
+      existing = await getPersonalLedgersByDate(date);
+      if (existing.isNotEmpty) {
+        await markDayMaterialized('personal_ledgers', date);
+        return existing;
+      }
+    }
     final latestAll = await getLatestPersonalLedgers(date);
     if (latestAll.isEmpty) return [];
     final byName = <String, PersonalLedger>{};
@@ -1675,14 +2001,21 @@ class DatabaseHelper {
       byName.putIfAbsent(l.name, () => l);
     }
     for (final src in byName.values) {
-      await insertPersonalLedger(PersonalLedger(
-        date: date,
-        name: src.name,
-        amount: src.amount,
-        note: src.note,
-      ));
+      await insertPersonalLedger(
+        PersonalLedger(
+          date: date,
+          name: src.name,
+          amount: src.amount,
+          note: src.note,
+        ),
+        uuid: slotUuid('personal_ledgers', date, src.name),
+      );
     }
     await markDayMaterialized('personal_ledgers', date);
+    final srcDate = await _latestSlotDate('personal_ledgers', date);
+    if (srcDate != null && srcDate.isNotEmpty) {
+      await freezeSlot('personal_ledgers', srcDate);
+    }
     return getPersonalLedgersByDate(date);
   }
 
@@ -1691,15 +2024,9 @@ class DatabaseHelper {
     String startDate,
     String endDate,
   ) async {
-    final all = await getPersonalLedgersByMonth(startDate, endDate);
-    final byName = <String, PersonalLedger>{};
-    for (final l in all) {
-      final cur = byName[l.name];
-      if (cur == null || (l.date).compareTo(cur.date) > 0) {
-        byName[l.name] = l;
-      }
-    }
-    return byName.values.toList();
+    final raw =
+        await _latestNameRowsInMonth('personal_ledgers', startDate, endDate);
+    return raw.map((m) => PersonalLedger.fromMap(m)).toList();
   }
 
   Future<int> deletePersonalLedger(int id) async {
@@ -1732,10 +2059,13 @@ class DatabaseHelper {
 
   Future<int> updatePersonalLedger(PersonalLedger ledger) async {
     final db = await database;
+    final wasFrozen = await _isRowFrozen(db, 'personal_ledgers', ledger.id);
+    if (wasFrozen) await unfreezeSlot('personal_ledgers', ledger.date ?? '', name: ledger.name);
     final data = ledger.toMap();
     data.remove('id');
     data.remove('date');
     data.remove('created_at');
+    data.remove('frozen');
     data['updated_at'] = _now();
     final id = await db.update(
       'personal_ledgers',
@@ -1746,27 +2076,32 @@ class DatabaseHelper {
     if (ledger.id != null) {
       await _enqueueRow('personal_ledgers', 'update', ledger.id!);
     }
+    if (wasFrozen) await freezeSlot('personal_ledgers', ledger.date ?? '', name: ledger.name);
     return id;
   }
 
   // ==================== SALDO DEDUCTIONS ====================
-  Future<int> insertSaldoDeduction(SaldoDeduction saldo) async {
+  Future<int> insertSaldoDeduction(SaldoDeduction saldo, {String? uuid}) async {
     final db = await database;
     final data = saldo.toMap();
     data.remove('id');
-    final uuid = newUuid();
-    data['uuid'] = uuid;
+    data.remove('frozen');
+    final rowUuid = uuid ?? newUuid();
+    data['uuid'] = rowUuid;
     data['created_at'] = _now();
     data['updated_at'] = _now();
     final id = await db.insert('saldo_deductions', data);
-    await _enqueueOutbox('saldo_deductions', 'insert', data, uuid);
+    await _enqueueOutbox('saldo_deductions', 'insert', data, rowUuid);
     return id;
   }
 
   Future<int> updateSaldoDeduction(SaldoDeduction saldo) async {
     final db = await database;
+    final wasFrozen = await _isRowFrozen(db, 'saldo_deductions', saldo.id);
+    if (wasFrozen) await unfreezeSlot('saldo_deductions', saldo.date ?? '');
     final data = saldo.toMap();
     data['updated_at'] = _now();
+    data.remove('frozen');
     final id = await db.update(
       'saldo_deductions',
       data,
@@ -1776,6 +2111,7 @@ class DatabaseHelper {
     if (saldo.id != null) {
       await _enqueueRow('saldo_deductions', 'update', saldo.id!);
     }
+    if (wasFrozen) await freezeSlot('saldo_deductions', saldo.date ?? '');
     return id;
   }
 
@@ -1805,36 +2141,44 @@ class DatabaseHelper {
   }
 
   Future<SaldoDeduction?> getLatestSaldoDeduction(String beforeDate) async {
-    final db = await database;
-    final maps = await db.query(
-      'saldo_deductions',
-      where: 'date < ?',
-      whereArgs: [beforeDate],
-      orderBy: 'date DESC, id DESC',
-      limit: 1,
-    );
-    if (maps.isEmpty) return null;
-    return SaldoDeduction.fromMap(maps.first);
+    final raw = await _latestSlotRows('saldo_deductions', beforeDate);
+    // Satu baris slot pertama = tanggal terbaru dgn updated_at terbesar.
+    if (raw.isEmpty) return null;
+    return SaldoDeduction.fromMap(raw.first);
   }
 
   /// Copy & putus pengurangan saldo: jika [date] belum punya catatan, salin
   /// nilai terakhir sebelumnya menjadi milik [date] (id baru).
   Future<SaldoDeduction?> materializeSaldoDeduction(String date) async {
-    final existing = await getSaldoDeductionsByDate(date);
+    var existing = await getSaldoDeductionsByDate(date);
     if (existing.isNotEmpty) {
       await markDayMaterialized('saldo_deductions', date);
       return existing.first;
     }
-    if (await isDayMaterialized('saldo_deductions', date)) return null;
+    if (await isDayMaterialized('saldo_deductions', date)) {
+      await clearAllSlotFlags('saldo_deductions', date);
+      existing = await getSaldoDeductionsByDate(date);
+      if (existing.isNotEmpty) {
+        await markDayMaterialized('saldo_deductions', date);
+        return existing.first;
+      }
+    }
     final latest = await getLatestSaldoDeduction(date);
     if (latest == null) return null;
-    await insertSaldoDeduction(SaldoDeduction(
-      date: date,
-      a: latest.a,
-      b: latest.b,
-      note: latest.note,
-    ));
+    await insertSaldoDeduction(
+      SaldoDeduction(
+        date: date,
+        a: latest.a,
+        b: latest.b,
+        note: latest.note,
+      ),
+      uuid: slotUuid('saldo_deductions', date, null),
+    );
     await markDayMaterialized('saldo_deductions', date);
+    final srcDate = await _latestSlotDate('saldo_deductions', date);
+    if (srcDate != null && srcDate.isNotEmpty) {
+      await freezeSlot('saldo_deductions', srcDate);
+    }
     final rows = await getSaldoDeductionsByDate(date);
     return rows.isNotEmpty ? rows.first : null;
   }
@@ -2050,5 +2394,495 @@ class DatabaseHelper {
     await _enqueueBulkDelete('saldo_deductions', null, null);
     await db.delete('oil_stocks');
     await db.delete('saldo_deductions');
+  }
+
+  /// Hapus hanya tabel data Hasil (slot "copy & putus") pada rentang tanggal
+  /// tertentu. Tidak menyentuh sales, expenses, customer_ledgers, maupun
+  /// products.
+  Future<void> clearSlotDataByDateRange(
+    String startDate,
+    String endDate,
+  ) async {
+    final db = await database;
+    const tables = [
+      'oil_stocks',
+      'stock_managements',
+      'stock_remainings',
+      'personal_ledgers',
+      'saldo_deductions',
+    ];
+    for (final table in tables) {
+      await _enqueueBulkDelete(table, 'date BETWEEN ? AND ?', [
+        startDate,
+        endDate,
+      ]);
+      await db.delete(
+        table,
+        where: 'date BETWEEN ? AND ?',
+        whereArgs: [startDate, endDate],
+      );
+    }
+  }
+
+  /// Rapikan duplikat baris slot (date[,name]): pertahankan satu baris dengan
+  /// `updated_at` terbesar per slot (aturan LWW yang sama dengan tampilan),
+  /// hapus sisanya secara lokal + tombstone (agar cloud & HP lain ikut rapi).
+  /// Idempoten: tidak melakukan apa-apa bila sudah bersih. Dipanggil saat
+  /// "Perbaiki Data" untuk membersihkan jumlah / sumber copy yang nyasar dari
+  /// era uuid acak.
+  Future<int> repairSlotDuplicates() async {
+    final db = await database;
+    var repaired = 0;
+    for (final table in _slotTables) {
+      final maps = await db.query(table, orderBy: 'id ASC');
+      final bySlot = <String, List<Map<String, dynamic>>>{};
+      for (final m in maps) {
+        final date = m['date'] as String? ?? '';
+        final nm = _isNameSlot(table) ? (m['name'] as String? ?? '') : '';
+        final key = '$date|$nm';
+        bySlot.putIfAbsent(key, () => []).add(m);
+      }
+      for (final group in bySlot.values) {
+        if (group.length <= 1) continue;
+        // Frozen rows always win — never delete them
+        final hasFrozen = group.any((r) => (r['frozen'] as int? ?? 0) == 1);
+        if (hasFrozen) {
+          // Only delete non-frozen duplicates
+          for (final r in group) {
+            if ((r['frozen'] as int? ?? 0) == 1) continue;
+            final uuid = r['uuid'] as String?;
+            if (uuid == null || uuid.isEmpty) continue;
+            await _enqueueDeleteById(table, r['id'] as int);
+            await db.delete(table, where: 'id = ?', whereArgs: [r['id'] as int]);
+            repaired++;
+          }
+          continue;
+        }
+        group.sort((a, b) {
+          final ta = _parseTs(a['updated_at'] as String?);
+          final tb = _parseTs(b['updated_at'] as String?);
+          final c = tb.compareTo(ta);
+          if (c != 0) return c;
+          return (a['id'] as int).compareTo(b['id'] as int);
+        });
+        for (final r in group.skip(1)) {
+          final uuid = r['uuid'] as String?;
+          if (uuid == null || uuid.isEmpty) continue;
+          await _enqueueDeleteById(table, r['id'] as int);
+          await db.delete(
+            table,
+            where: 'id = ?',
+            whereArgs: [r['id'] as int],
+          );
+          repaired++;
+        }
+      }
+    }
+    return repaired;
+  }
+
+  /// Hapus sale_items yang sale_id-nya null atau tidak memiliki sales record
+  /// yang valid. Ini terjadi jika sync pull gagal resolve FK.
+  Future<int> repairOrphanedSaleItems() async {
+    final db = await database;
+    final orphaned = await db.rawQuery('''
+      SELECT si.id FROM sale_items si
+      LEFT JOIN sales s ON si.sale_id = s.id
+      WHERE s.id IS NULL OR si.sale_id IS NULL
+    ''');
+    var repaired = 0;
+    for (final row in orphaned) {
+      final id = row['id'] as int;
+      await _enqueueDeleteById('sale_items', id);
+      await db.delete('sale_items', where: 'id = ?', whereArgs: [id]);
+      repaired++;
+    }
+    return repaired;
+  }
+
+  /// Hapus customer_ledgers yang sale_id-nya tidak null tapi tidak memiliki
+  /// sales record yang valid (kecuali hutang manual yang memang tanpa sale).
+  Future<int> repairOrphanedCustomerLedgers() async {
+    final db = await database;
+    final orphaned = await db.rawQuery('''
+      SELECT cl.id FROM customer_ledgers cl
+      LEFT JOIN sales s ON cl.sale_id = s.id
+      WHERE cl.sale_id IS NOT NULL AND s.id IS NULL
+    ''');
+    var repaired = 0;
+    for (final row in orphaned) {
+      final id = row['id'] as int;
+      await _enqueueDeleteById('customer_ledgers', id);
+      await db.delete('customer_ledgers', where: 'id = ?', whereArgs: [id]);
+      repaired++;
+    }
+    return repaired;
+  }
+
+  /// Jalankan semua perbaikan data sekaligus. Mengembalikan jumlah total
+  /// baris yang diperbaiki/dihapus.
+  Future<int> repairAll() async {
+    final d1 = await repairSlotDuplicates();
+    final d2 = await repairOrphanedSaleItems();
+    final d3 = await repairOrphanedCustomerLedgers();
+    final total = d1 + d2 + d3;
+    if (total > 0) {
+      debugPrint(
+        'REPAIR: slot_dup=$d1 orphan_sale=$d2 orphan_ledger=$d3 total=$total',
+      );
+    }
+    return total;
+  }
+
+  /// Repair AGRESIF: dipanggil saat startup untuk memperbaiki data yang
+  /// sudah terlanjur salah. Membersihkan:
+  /// 1. Duplikat di SEMUA tabel (bukan hanya slot)
+  /// 2. Orphaned sale_items & customer_ledgers
+  /// 3. Recalculate sale.rounded_total & sale.diff dari sale_items
+  Future<int> forceRepairAll() async {
+    final db = await database;
+    var total = 0;
+
+    // 1. Duplikat slot tables (sama seperti repairAll)
+    total += await repairSlotDuplicates();
+
+    // 2. Duplikat sales: hapus sales yang identik (date+name+rounded_total+paid)
+    //    Pertahankan yang id-nya paling kecil (paling awal dibuat).
+    final dupSales = await db.rawQuery('''
+      SELECT s1.id FROM sales s1
+      INNER JOIN sales s2
+        ON s1.date = s2.date
+        AND s1.name = s2.name
+        AND s1.rounded_total = s2.rounded_total
+        AND s1.paid = s2.paid
+        AND s1.id > s2.id
+    ''');
+    for (final row in dupSales) {
+      final id = row['id'] as int;
+      // Hapus sale_items dulu (FK constraint)
+      final items = await db.query('sale_items', columns: ['id'],
+          where: 'sale_id = ?', whereArgs: [id]);
+      for (final item in items) {
+        await _enqueueDeleteById('sale_items', item['id'] as int);
+        await db.delete('sale_items', where: 'id = ?',
+            whereArgs: [item['id']]);
+      }
+      // Hapus customer_ledgers terkait
+      final ledgers = await db.query('customer_ledgers', columns: ['id'],
+          where: 'sale_id = ?', whereArgs: [id]);
+      for (final ledger in ledgers) {
+        await _enqueueDeleteById('customer_ledgers', ledger['id'] as int);
+        await db.delete('customer_ledgers', where: 'id = ?',
+            whereArgs: [ledger['id']]);
+      }
+      await _enqueueDeleteById('sales', id);
+      await db.delete('sales', where: 'id = ?', whereArgs: [id]);
+      total++;
+    }
+
+    // 3. Duplikat expenses: hapus yang identik (date+amount+note)
+    final dupExpenses = await db.rawQuery('''
+      SELECT e1.id FROM expenses e1
+      INNER JOIN expenses e2
+        ON e1.date = e2.date
+        AND e1.amount = e2.amount
+        AND COALESCE(e1.note,'') = COALESCE(e2.note,'')
+        AND e1.id > e2.id
+    ''');
+    for (final row in dupExpenses) {
+      final id = row['id'] as int;
+      await _enqueueDeleteById('expenses', id);
+      await db.delete('expenses', where: 'id = ?', whereArgs: [id]);
+      total++;
+    }
+
+    // 3b. Duplikat sale_items: hapus item yang product_id sama dalam 1 sale
+    // (pertahankan yang id terkecil = paling awal diinput).
+    final dupItems = await db.rawQuery('''
+      SELECT si1.id FROM sale_items si1
+      INNER JOIN sale_items si2
+        ON si1.sale_id = si2.sale_id
+        AND COALESCE(si1.product_id,'') = COALESCE(si2.product_id,'')
+        AND si1.id > si2.id
+    ''');
+    for (final row in dupItems) {
+      final id = row['id'] as int;
+      await _enqueueDeleteById('sale_items', id);
+      await db.delete('sale_items', where: 'id = ?', whereArgs: [id]);
+      total++;
+    }
+
+    // 4. Recalculate sale totals dari sale_items yang valid
+    final sales = await db.query('sales');
+    for (final s in sales) {
+      final saleId = s['id'] as int;
+      final items = await db.query('sale_items',
+          where: 'sale_id = ?', whereArgs: [saleId]);
+      final recalcedTotal = items.fold<int>(0, (sum, item) {
+        final qty = (item['qty'] as num?)?.toDouble() ?? 0;
+        final price = (item['price'] as num?)?.toInt() ?? 0;
+        return sum + (qty * price).round();
+      });
+      final roundedTotal = items.isEmpty
+          ? (s['paid'] as int?) ?? 0
+          : roundTotal(recalcedTotal);
+      final paid = (s['paid'] as int?) ?? 0;
+      final debtPaidAmt = (s['debt_paid_amount'] as int?) ?? 0;
+      final isDebtPaid = (s['debt_paid'] as int?) == 1;
+      // Jika debtPaid aktif, diff hanya untuk hari ini (kurangi bagian kemarin)
+      final diff = isDebtPaid
+          ? roundedTotal - (paid - debtPaidAmt)
+          : roundedTotal - paid;
+
+      // Update jika berubah
+      if (roundedTotal != (s['rounded_total'] as int?) ||
+          diff != (s['diff'] as int?)) {
+        await db.update(
+          'sales',
+          {
+            'raw_total': recalcedTotal,
+            'rounded_total': roundedTotal,
+            'diff': diff,
+            'updated_at': _now(),
+          },
+          where: 'id = ?',
+          whereArgs: [saleId],
+        );
+        await _enqueueRow('sales', 'update', saleId);
+        total++;
+      }
+    }
+
+    // 5. Fix debtPaid sales yang debtPaidAmount-nya masih 0
+    final debtPaidSales = await db.query('sales',
+        where: 'debt_paid = 1 AND debt_paid_amount = 0');
+    for (final s in debtPaidSales) {
+      final saleId = s['id'] as int;
+      final name = s['name'] as String;
+      final date = s['date'] as String;
+      final paid = s['paid'] as int;
+      final prevSale = await getPreviousUnpaidSale(name, date);
+      final prevDiff = prevSale?.diff ?? 0;
+      final debtPaidAmount = prevDiff > 0
+          ? (paid > prevDiff ? prevDiff : paid)
+          : 0;
+      final roundedTotal = s['rounded_total'] as int;
+      final newDiff = roundedTotal - (paid - debtPaidAmount);
+      await db.update(
+        'sales',
+        {'debt_paid_amount': debtPaidAmount, 'diff': newDiff},
+        where: 'id = ?',
+        whereArgs: [saleId],
+      );
+      await _enqueueRow('sales', 'update', saleId);
+      total++;
+    }
+
+    // 6. Orphaned records
+    total += await repairOrphanedSaleItems();
+    total += await repairOrphanedCustomerLedgers();
+
+    if (total > 0) {
+      debugPrint('FORCE_REPAIR: fixed $total rows');
+    }
+    return total;
+  }
+
+  // ==================== DUMP DATA ====================
+  Future<String> dumpAllData() async {
+    final db = await database;
+    final sb = StringBuffer();
+    final today = DateTime.now().toIso8601String().substring(0, 10);
+
+    sb.writeln('=== DUMP DATA HP - $today ===\n');
+
+    // OIL
+    sb.writeln('OIL:');
+    final oil = await db.query('oil_stocks', orderBy: 'date DESC, id DESC', limit: 5);
+    for (final r in oil) {
+      final f = (r['frozen'] as int? ?? 0) == 1 ? ' [FROZEN]' : '';
+      sb.writeln('  id=${r['id']} date=${r['date']} qty=${r['qty']} price=${r['price']}$f');
+    }
+
+    // STOCK_MGMT
+    sb.writeln('\nSTOCK_MGMT:');
+    final sm = await db.query('stock_managements', orderBy: 'date DESC, id DESC', limit: 20);
+    for (final r in sm) {
+      final f = (r['frozen'] as int? ?? 0) == 1 ? ' [FROZEN]' : '';
+      sb.writeln('  id=${r['id']} date=${r['date']} name=${r['name']} price=${r['price']} qty=${r['qty']}$f');
+    }
+
+    // STOCK_REMAIN
+    sb.writeln('\nSTOCK_REMAIN:');
+    final sr = await db.query('stock_remainings', orderBy: 'date DESC, id DESC', limit: 20);
+    for (final r in sr) {
+      final f = (r['frozen'] as int? ?? 0) == 1 ? ' [FROZEN]' : '';
+      sb.writeln('  id=${r['id']} date=${r['date']} name=${r['name']} price=${r['price']} qty=${r['qty']} subtotal=${(r['qty'] as double) * (r['price'] as int)}$f');
+    }
+
+    // PERSONAL_LEDGER
+    sb.writeln('\nPERSONAL_LEDGER:');
+    final pl = await db.query('personal_ledgers', orderBy: 'date DESC, id DESC', limit: 20);
+    for (final r in pl) {
+      final f = (r['frozen'] as int? ?? 0) == 1 ? ' [FROZEN]' : '';
+      sb.writeln('  id=${r['id']} date=${r['date']} name=${r['name']} amount=${r['amount']}$f');
+    }
+
+    // SALDO_DEDUCTION
+    sb.writeln('\nSALDO_DEDUCTION:');
+    final sd = await db.query('saldo_deductions', orderBy: 'date DESC, id DESC', limit: 5);
+    for (final r in sd) {
+      final f = (r['frozen'] as int? ?? 0) == 1 ? ' [FROZEN]' : '';
+      sb.writeln('  id=${r['id']} date=${r['date']} a=${r['a']} b=${r['b']}$f');
+    }
+
+    final result = sb.toString();
+    debugPrint(result);
+    return result;
+  }
+
+  // ==================== FIX TAB HASIL DATA ====================
+  Future<String> fixTabHasilData() async {
+    final db = await database;
+    final sb = StringBuffer();
+    const date = '2026-09-16';
+    const prevDate = '2026-09-15';
+    const tables = [
+      'oil_stocks',
+      'stock_managements',
+      'stock_remainings',
+      'personal_ledgers',
+      'saldo_deductions',
+    ];
+    var fixed = 0;
+
+    sb.writeln('=== FIX TAB HASIL: $date ===\n');
+
+    // 1. Clear materialized_days & slot_deleted flags untuk 2026-09-16
+    sb.writeln('1. Clearing flags...');
+    for (final t in tables) {
+      final matKey = 'mater_${t}_$date';
+      final old = await getSyncMeta(matKey);
+      if (old != null) {
+        await db.delete('sync_meta', where: 'key = ?', whereArgs: [matKey]);
+        sb.writeln('  Cleared $matKey (was: $old)');
+        fixed++;
+      }
+    }
+    for (final t in tables) {
+      for (final key in [
+        'del|$t|$date',
+        'del|$t|$date|gun',
+        'del|$t|$date|MUJILAN',
+        'del|$t|$date|my',
+        'del|$t|$date|mt',
+        'del|$t|$date|259',
+      ]) {
+        final old = await getSyncMeta(key);
+        if (old != null) {
+          await db.delete('sync_meta', where: 'key = ?', whereArgs: [key]);
+          sb.writeln('  Cleared $key');
+          fixed++;
+        }
+      }
+    }
+    sb.writeln('  Flags cleared: $fixed\n');
+
+    // 2. Fix STOCK_MGMT 2026-09-15: restore qty sesuai log
+    sb.writeln('2. Fixing STOCK_MGMT $prevDate...');
+    final smRows = await db.query('stock_managements',
+        where: 'date = ?', whereArgs: [prevDate]);
+    for (final r in smRows) {
+      final name = r['name'] as String;
+      final id = r['id'] as int;
+      final curQty = (r['qty'] as num).toDouble();
+      final price = r['price'] as int;
+      double? fixQty;
+      if (name == 'gun' && curQty != 100) {
+        fixQty = 100;
+      } else if (name == 'MUJILAN' && curQty != 25) {
+        fixQty = 25;
+      }
+      if (fixQty != null) {
+        final oldSubtotal = (curQty * price).round();
+        final newSubtotal = (fixQty * price).round();
+        await db.update('stock_managements', {
+          'qty': fixQty,
+          'updated_at': _now(),
+        }, where: 'id = ?', whereArgs: [id]);
+        await _enqueueRow('stock_managements', 'update', id);
+        sb.writeln('  $name: qty $curQty -> $fixQty (subtotal $oldSubtotal -> $newSubtotal)');
+        fixed++;
+      }
+    }
+    sb.writeln('');
+
+    // 3. Delete stale tombstone outbox entries untuk 2026-09-16
+    sb.writeln('3. Cleaning outbox tombstones...');
+    final outbox = await db.query('outbox', where: 'synced_at IS NULL');
+    var cleaned = 0;
+    for (final e in outbox) {
+      final op = e['operation'] as String;
+      if (op != 'delete') continue;
+      final raw = e['payload'] as String? ?? '{}';
+      if (!raw.contains(date)) continue;
+      await db.delete('outbox', where: 'id = ?', whereArgs: [e['id']]);
+      cleaned++;
+    }
+    sb.writeln('  Removed $cleaned stale outbox entries\n');
+
+    // 4. Re-materialize semua slot tables untuk 2026-09-16
+    sb.writeln('4. Re-materializing $date...');
+    final oil = await materializeOilStock(date);
+    sb.writeln('  OIL: ${oil != null ? "qty=${oil.qty}" : "EMPTY"}');
+
+    final sm = await materializeStockManagements(date);
+    sb.writeln('  STOCK_MGMT: ${sm.length} records');
+    for (final s in sm) {
+      sb.writeln('    ${s.name}: qty=${s.qty} price=${s.price} subtotal=${s.subtotal}');
+    }
+
+    final sr = await materializeStockRemainings(date);
+    sb.writeln('  STOCK_REMAIN: ${sr.length} records');
+    for (final s in sr) {
+      sb.writeln('    ${s.name}: qty=${s.qty} price=${s.price} subtotal=${s.subtotal}');
+    }
+
+    final pl = await materializePersonalLedgers(date);
+    sb.writeln('  PERSONAL_LEDGER: ${pl.length} records');
+    for (final p in pl) {
+      sb.writeln('    ${p.name}: amount=${p.amount}');
+    }
+
+    final sd = await materializeSaldoDeduction(date);
+    sb.writeln('  SALDO_DEDUCTION: ${sd != null ? "a=${sd.a} b=${sd.b}" : "EMPTY"}');
+
+    // 5. Dump final
+    sb.writeln('\n5. Final dump:');
+    final finalSm = await db.query('stock_managements',
+        where: 'date = ?', whereArgs: [date]);
+    sb.writeln('  stock_managements $date: ${finalSm.length} rows');
+    for (final r in finalSm) {
+      sb.writeln('    ${r['name']}: qty=${r['qty']} price=${r['price']}');
+    }
+    final finalOil = await db.query('oil_stocks',
+        where: 'date = ?', whereArgs: [date]);
+    sb.writeln('  oil_stocks $date: ${finalOil.length} rows');
+    for (final r in finalOil) {
+      sb.writeln('    qty=${r['qty']} price=${r['price']}');
+    }
+    final finalSr = await db.query('stock_remainings',
+        where: 'date = ?', whereArgs: [date]);
+    sb.writeln('  stock_remainings $date: ${finalSr.length} rows');
+    final finalPl = await db.query('personal_ledgers',
+        where: 'date = ?', whereArgs: [date]);
+    sb.writeln('  personal_ledgers $date: ${finalPl.length} rows');
+    final finalSd = await db.query('saldo_deductions',
+        where: 'date = ?', whereArgs: [date]);
+    sb.writeln('  saldo_deductions $date: ${finalSd.length} rows');
+
+    final result = sb.toString();
+    debugPrint(result);
+    return result;
   }
 }
